@@ -431,7 +431,19 @@ dialog form,dialog .body{padding:16px;display:grid;gap:12px}
   // ---------- server ----------
   function run(fn){
     var args = Array.prototype.slice.call(arguments, 1);
-    return new Promise(function(res, rej){ var r = google.script.run.withSuccessHandler(res).withFailureHandler(rej); r[fn].apply(r, args); });
+    // لو Google مشغول (زحمة) بنعيد المحاولة لوحدنا. الأخطاء دي معناها إن مفيش حاجة اتحفظت، فمفيش تكرار.
+    var busy = /Lock timeout|too many simultaneous|invoked too many times|Service Spreadsheets timed out|try again later/i;
+    function attempt(n){
+      return new Promise(function(res, rej){
+        var r = google.script.run.withSuccessHandler(res).withFailureHandler(function(e){
+          var m = (e && e.message) || String(e || "");
+          if(n < 3 && busy.test(m)) setTimeout(function(){ attempt(n + 1).then(res, rej); }, 1200 * n + Math.random() * 1500);
+          else rej(e);
+        });
+        r[fn].apply(r, args);
+      });
+    }
+    return attempt(1);
   }
   function errMsg(e){
     var m = (e && e.message) || String(e || "");
@@ -583,7 +595,7 @@ dialog form,dialog .body{padding:16px;display:grid;gap:12px}
   $("#newBtn").addEventListener("click", function(){ openItemForm(null); });
   $("#photoFile").addEventListener("change", function(e){
     var f = e.target.files && e.target.files[0]; e.target.value = ""; if(!f) return;
-    Promise.all([shrink(f, 1600, 0.85), shrink(f, 240, 0.7)]).then(function(r){ photoData = r[0]; thumbData = r[1]; var pv = $("#photoPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+r[1]+"')"; })
+    Promise.all([shrink(f, 1200, 0.7), shrink(f, 200, 0.65)]).then(function(r){ photoData = r[0]; thumbData = r[1]; var pv = $("#photoPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+r[1]+"')"; })
       .catch(function(err){ $("#iMsg").textContent = err.message; });
   });
   $("#itemForm").addEventListener("submit", function(e){
@@ -666,7 +678,7 @@ dialog form,dialog .body{padding:16px;display:grid;gap:12px}
   }
   $("#idFile").addEventListener("change", function(e){
     var f = e.target.files && e.target.files[0]; e.target.value = ""; if(!f) return;
-    shrink(f, 1600, 0.85).then(function(d){ idData = d; var pv = $("#idPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+d+"')"; }).catch(function(err){ $("#hMsg").textContent = err.message; });
+    shrink(f, 1400, 0.75).then(function(d){ idData = d; var pv = $("#idPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+d+"')"; }).catch(function(err){ $("#hMsg").textContent = err.message; });
   });
   $("#hoForm").addEventListener("submit", function(e){
     if(e.submitter && e.submitter.value === "cancel") return;

@@ -75,6 +75,7 @@ function setup() {
   itemsSheet_(); handoversSheet_(); historySheet_(); usersSheet_(); permsSheet_(); listsSheet_();
   folder_('PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات');
   folder_('IDS_FOLDER', 'مفقودات مراسي - صور البطايق (خاص)');
+  folder_('THUMBS_FOLDER', 'مفقودات مراسي - صور مصغّرة');
   const keep = [ITEMS_SHEET, HANDOVERS_SHEET, HISTORY_SHEET, USERS_SHEET, PERMS_SHEET, LISTS_SHEET];
   ss.getSheets().forEach(function (s) {
     if (keep.indexOf(s.getName()) < 0 && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
@@ -417,27 +418,87 @@ function statusKey_(v) {
   return 'found';
 }
 
-/** كل المفقودات (غير الممسوحة)، الأحدث الأول. withThumb لإرجاع الصورة المصغّرة. */
-function items_(withThumb) {
+// ---- قراءة سريعة: الشيت ممكن يوصل لعشرات الآلاف من السطور ----
+const ITEM_W = IC['صورة (Drive ID)'] + 1;          // كل الأعمدة ما عدا المصغّرة
+
+function rowToItem_(r, row) {
+  return {
+    row: row, code: String(r[IC['الكود']]), category: String(r[IC['النوع']]), description: String(r[IC['الوصف']]),
+    place: String(r[IC['المكان']]), date: String(r[IC['تاريخ العثور']]).slice(0, 10), time: String(r[IC['وقت العثور']]).slice(-5),
+    finderName: String(r[IC['اسم اللي لقاها']]), finderPhone: String(r[IC['موبايل اللي لقاها']]), finderType: String(r[IC['تبعيته']]),
+    supervisor: String(r[IC['مشرف الأمن المستلم']]), officeAt: String(r[IC['وقت التسليم للأمن']]),
+    status: statusKey_(r[IC['الحالة']]), by: String(r[IC['سجّلها']]), createdAt: String(r[IC['وقت التسجيل']]),
+    edited: String(r[IC['آخر تعديل']] || ''), hasPhoto: !!String(r[IC['صورة (Drive ID)']] || '').trim(),
+    photoId: String(r[IC['صورة (Drive ID)']] || ''), thumb: ''
+  };
+}
+function live_(r) { return r[IC['الكود']] && !String(r[IC['محذوف']] || '').trim(); }
+
+/** كل المفقودات (غير الممسوحة)، الأحدث الأول — من غير الصور المصغّرة. */
+function items_() {
   const out = [];
-  const rows = values_(itemsSheet_(), ITEM_HEADERS.length);
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const r = rows[i];
-    if (!r[IC['الكود']] || String(r[IC['محذوف']] || '').trim()) continue;
-    out.push({
-      row: i + 2, code: String(r[IC['الكود']]), category: String(r[IC['النوع']]), description: String(r[IC['الوصف']]),
-      place: String(r[IC['المكان']]), date: String(r[IC['تاريخ العثور']]).slice(0, 10), time: String(r[IC['وقت العثور']]).slice(-5),
-      finderName: String(r[IC['اسم اللي لقاها']]), finderPhone: String(r[IC['موبايل اللي لقاها']]), finderType: String(r[IC['تبعيته']]),
-      supervisor: String(r[IC['مشرف الأمن المستلم']]), officeAt: String(r[IC['وقت التسليم للأمن']]),
-      status: statusKey_(r[IC['الحالة']]), by: String(r[IC['سجّلها']]), createdAt: String(r[IC['وقت التسجيل']]),
-      edited: String(r[IC['آخر تعديل']] || ''), hasPhoto: !!String(r[IC['صورة (Drive ID)']] || '').trim(),
-      photoId: String(r[IC['صورة (Drive ID)']] || ''), thumb: withThumb ? String(r[IC['مصغّرة']] || '') : ''
+  const rows = values_(itemsSheet_(), ITEM_W);
+  for (let i = rows.length - 1; i >= 0; i--) if (live_(rows[i])) out.push(rowToItem_(rows[i], i + 2));
+  return out;
+}
+
+/** آخر n مفقود (الأحدث الأول) من غير ما نقرا الشيت كله. */
+function latestItems_(n) {
+  const sh = itemsSheet_(), last = sh.getLastRow(), out = [];
+  let end = last;
+  while (end >= 2 && out.length < n) {
+    const start = Math.max(2, end - Math.max(n * 2, 100) + 1);
+    const rows = sh.getRange(start, 1, end - start + 1, ITEM_W).getValues().map(function (r) {
+      return r.map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; });
     });
+    for (let i = rows.length - 1; i >= 0 && out.length < n; i--) if (live_(rows[i])) out.push(rowToItem_(rows[i], start + i));
+    end = start - 1;
   }
   return out;
 }
-function item_(code) { return items_(true).filter(function (x) { return x.code === code; })[0] || null; }
-function clientItem_(x) { const o = Object.assign({}, x); delete o.row; delete o.photoId; return o; }
+
+/** سطر المفقود بالكود (بحث مباشر بدل قراية الشيت كله). */
+function rowOfCode_(sh, code) {
+  code = String(code || '').trim();
+  if (!code || sh.getLastRow() < 2) return 0;
+  const hit = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(code).matchEntireCell(true).findNext();
+  return hit ? hit.getRow() : 0;
+}
+function item_(code) {
+  const sh = itemsSheet_();
+  const row = rowOfCode_(sh, code);
+  if (!row) return null;
+  const r = sh.getRange(row, 1, 1, ITEM_HEADERS.length).getValues()[0].map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; });
+  if (!live_(r)) return null;
+  const x = rowToItem_(r, row);
+  x.thumbRef = String(r[IC['مصغّرة']] || '');
+  return x;
+}
+function clientItem_(x) { const o = Object.assign({}, x); delete o.row; delete o.photoId; delete o.thumbRef; return o; }
+
+/** الصور المصغّرة لمجموعة مفقودات: من الكاش، وإلا من ملفاتها على Drive. */
+function attachThumbs_(list) {
+  if (!list.length) return list;
+  const sh = itemsSheet_(), col = IC['مصغّرة'] + 1;
+  const refs = list.map(function (x) { return x.thumbRef !== undefined ? x.thumbRef : String(sh.getRange(x.row, col).getValue() || ''); });
+  const cache = CacheService.getScriptCache();
+  const ids = refs.filter(function (r) { return r && r.indexOf('data:') !== 0; });
+  const hit = ids.length ? cache.getAll(ids.map(function (id) { return 'th:' + id; })) : {};
+  const put = {};
+  list.forEach(function (x, i) {
+    const ref = refs[i];
+    if (!ref) return;
+    if (ref.indexOf('data:') === 0) { x.thumb = ref; return; }          // سطور قديمة كانت الصورة جوه الشيت
+    let t = hit['th:' + ref];
+    if (!t) {
+      try { t = 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(ref).getBlob().getBytes()); put['th:' + ref] = t; }
+      catch (e) { t = ''; }
+    }
+    x.thumb = t;
+  });
+  if (Object.keys(put).length) { try { cache.putAll(put, 21600); } catch (e) {} }
+  return list;
+}
 
 function matches_(x, f) {
   f = f || {};
@@ -452,32 +513,65 @@ function matches_(x, f) {
   }
   return true;
 }
+function noFilter_(f) { f = f || {}; return !f.status && !f.category && !f.place && !f.from && !f.to && !f.q; }
+
+/** أرقام الحالات: بنقرا ٣ أعمدة بس. */
+function stats_() {
+  const sh = itemsSheet_(), n = sh.getLastRow() - 1;
+  const st = { all: 0, found: 0, office: 0, requested: 0, delivered: 0, today: 0 };
+  if (n < 1) return st;
+  const col = function (h) { return sh.getRange(2, IC[h] + 1, n, 1).getValues(); };
+  const codes = col('الكود'), del = col('محذوف'), status = col('الحالة'), dates = col('تاريخ العثور');
+  const today = dayKey_(new Date());
+  for (let i = 0; i < n; i++) {
+    if (!codes[i][0] || String(del[i][0] || '').trim()) continue;
+    st.all++; st[statusKey_(status[i][0])]++;
+    const d = dates[i][0] instanceof Date ? Utilities.formatDate(dates[i][0], TZ, 'yyyy-MM-dd') : String(dates[i][0]).slice(0, 10);
+    if (d === today) st.today++;
+  }
+  return st;
+}
 
 function listItems(token, f, offset, limit) {
   auth_(token, 'items.view');
-  const all = items_(true);
-  const rows = all.filter(function (x) { return matches_(x, f); });
   offset = Number(offset) || 0; limit = Math.min(Number(limit) || 30, 100);
-  const today = dayKey_(new Date());
-  const count = function (s) { return all.filter(function (x) { return x.status === s; }).length; };
-  return {
-    total: rows.length,
-    items: rows.slice(offset, offset + limit).map(clientItem_),
-    stats: { all: all.length, found: count('found'), office: count('office'), requested: count('requested'), delivered: count('delivered'),
-      today: all.filter(function (x) { return x.date === today; }).length }
-  };
+  const stats = stats_();
+  let page, total;
+  if (noFilter_(f)) {                                  // الفتحة العادية: آخر المفقودات بس
+    page = latestItems_(offset + limit).slice(offset);
+    total = stats.all;
+  } else {
+    const rows = items_().filter(function (x) { return matches_(x, f); });
+    page = rows.slice(offset, offset + limit); total = rows.length;
+  }
+  return { total: total, items: attachThumbs_(page).map(clientItem_), stats: stats };
+}
+
+/** سطور الكود ده في شيت (السجل / التسليمات). */
+function rowsOfCode_(sh, code, width) {
+  if (sh.getLastRow() < 2) return [];
+  return sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(code).matchEntireCell(true).findAll()
+    .map(function (r) { return sh.getRange(r.getRow(), 1, 1, width).getValues()[0].map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; }); });
+}
+function handoverOf_(code) {
+  const r = rowsOfCode_(handoversSheet_(), code, HO_HEADERS.length).pop();
+  if (!r) return null;
+  return { code: String(r[HC['الكود']]), name: String(r[HC['اسم صاحبها']]), unit: String(r[HC['رقم الوحدة']]), type: String(r[HC['الصفة']]),
+    phone: String(r[HC['الموبايل']]), note: String(r[HC['ملاحظات']]), by: String(r[HC['سلّمها']]), at: String(r[HC['وقت التسليم']]),
+    idPhotoId: String(r[HC['صورة البطاقة (Drive ID)']] || '') };
 }
 
 function getItem(token, code) {
   const u = auth_(token, 'items.view');
   const x = item_(code);
   if (!x) throw new Error('المفقود ده مش موجود.');
-  const hist = values_(historySheet_(), HIST_HEADERS.length).filter(function (r) { return r[0] === code; })
+  attachThumbs_([x]);
+  const hist = rowsOfCode_(historySheet_(), code, HIST_HEADERS.length)
     .map(function (r) { return { from: statusKey_(r[1]), to: statusKey_(r[2]), by: String(r[3]), at: String(r[4]) }; });
   let ho = null;
   if (can_(u, 'claims.view')) {
-    const h = handovers_().filter(function (r) { return r.code === code; })[0];
-    if (h) { ho = Object.assign({}, h); delete ho.idPhotoId; delete ho.row; }
+    const h = handoverOf_(code);
+    if (h) { ho = Object.assign({}, h); delete ho.idPhotoId; }
   }
   return { item: clientItem_(x), history: hist, handover: ho, next: NEXT[x.status] || [] };
 }
@@ -497,15 +591,27 @@ function savePhoto_(dataUrl, folderKey, folderName, name) {
   if (bytes.length > 6 * 1024 * 1024) throw new Error('الصورة كبيرة قوي.');
   return folder_(folderKey, folderName).createFile(Utilities.newBlob(bytes, m[1], name + '.jpg')).getId();
 }
+function saveThumb_(thumb, code) {
+  if (!/^data:image\/jpeg;base64,/.test(thumb || '') || thumb.length > 60000) return '';
+  return savePhoto_(thumb, 'THUMBS_FOLDER', 'مفقودات مراسي - صور مصغّرة', 'thumb_' + code);
+}
+function trash_(id) { if (id && id.indexOf('data:') !== 0) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} } }
 
 function nextCode_() {
-  const prefix = 'LF-' + Utilities.formatDate(new Date(), TZ, 'yyyy') + '-';
-  let max = 0;
-  values_(itemsSheet_(), 1).forEach(function (r) {
-    const c = String(r[0]);
-    if (c.indexOf(prefix) === 0) max = Math.max(max, Number(c.slice(prefix.length)) || 0);
-  });
-  return prefix + ('000000' + (max + 1)).slice(-6);
+  const year = Utilities.formatDate(new Date(), TZ, 'yyyy'), prefix = 'LF-' + year + '-';
+  const props = PropertiesService.getScriptProperties(), key = 'SEQ_' + year;
+  let max = Number(props.getProperty(key));
+  if (!max) {                                         // أول مرة في السنة: نحسبها من الشيت
+    max = 0;
+    values_(itemsSheet_(), 1).forEach(function (r) {
+      const c = String(r[0]);
+      if (c.indexOf(prefix) === 0) max = Math.max(max, Number(c.slice(prefix.length)) || 0);
+    });
+  }
+  let code;
+  do { max++; code = prefix + ('000000' + max).slice(-6); } while (rowOfCode_(itemsSheet_(), code));
+  props.setProperty(key, String(max));
+  return code;
 }
 
 function itemFields_(d) {
@@ -536,7 +642,7 @@ function createItem(token, d, photo, thumb) {
     row[IC['اسم اللي لقاها']] = f.finderName; row[IC['موبايل اللي لقاها']] = f.finderPhone ? "'" + f.finderPhone : ''; row[IC['تبعيته']] = f.finderType;
     row[IC['مشرف الأمن المستلم']] = f.supervisor; row[IC['وقت التسليم للأمن']] = f.toOffice ? now : '';
     row[IC['الحالة']] = STATUSES[status]; row[IC['سجّلها']] = u.name + ' (' + u.username + ')'; row[IC['وقت التسجيل']] = now;
-    row[IC['صورة (Drive ID)']] = photoId; row[IC['مصغّرة']] = /^data:image\/jpeg;base64,/.test(thumb || '') && thumb.length < 45000 ? thumb : '';
+    row[IC['صورة (Drive ID)']] = photoId; row[IC['مصغّرة']] = photoId ? saveThumb_(thumb, code) : '';
     itemsSheet_().appendRow(row);
     history_(code, '', status, u);
     return { code: code };
@@ -563,8 +669,8 @@ function updateItem(token, code, d, photo, thumb) {
     }
     if (photo) {
       set('صورة (Drive ID)', savePhoto_(photo, 'PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات', code));
-      set('مصغّرة', /^data:image\/jpeg;base64,/.test(thumb || '') && thumb.length < 45000 ? thumb : '');
-      if (x.photoId) { try { DriveApp.getFileById(x.photoId).setTrashed(true); } catch (e) {} }
+      set('مصغّرة', saveThumb_(thumb, code));
+      trash_(x.photoId); trash_(x.thumbRef);
     }
     set('آخر تعديل', u.username + ' ' + stamp_(new Date()));
     return getItem(token, code);
@@ -640,9 +746,19 @@ function handover(token, code, d, idPhoto) {
 
 function listHandovers(token) {
   auth_(token, 'claims.view');
-  const items = {};
-  items_(false).forEach(function (x) { items[x.code] = x; });
-  return handovers_().filter(function (h) { return items[h.code]; }).slice(0, 300).map(function (h) {
+  // آخر ٣٠٠ تسليم بس، والنوع من عمودين في شيت المفقودات
+  const sh = itemsSheet_(), n = sh.getLastRow() - 1, items = {};
+  if (n > 0) {
+    const codes = sh.getRange(2, 1, n, 2).getValues(), del = sh.getRange(2, IC['محذوف'] + 1, n, 1).getValues();
+    for (let i = 0; i < n; i++) if (codes[i][0] && !String(del[i][0] || '').trim()) items[codes[i][0]] = { category: String(codes[i][1]) };
+  }
+  const hs = handoversSheet_(), last = hs.getLastRow(), start = Math.max(2, last - 399);
+  const recent = last < 2 ? [] : hs.getRange(start, 1, last - start + 1, HO_HEADERS.length).getValues().map(function (r) {
+    return { code: String(r[HC['الكود']]), name: String(r[HC['اسم صاحبها']]), unit: String(r[HC['رقم الوحدة']]), type: String(r[HC['الصفة']]),
+      phone: String(r[HC['الموبايل']]), note: String(r[HC['ملاحظات']]), by: String(r[HC['سلّمها']]),
+      at: r[HC['وقت التسليم']] instanceof Date ? stamp_(r[HC['وقت التسليم']]) : String(r[HC['وقت التسليم']]), idPhotoId: String(r[HC['صورة البطاقة (Drive ID)']] || '') };
+  }).reverse();
+  return recent.filter(function (h) { return items[h.code]; }).slice(0, 300).map(function (h) {
     return { code: h.code, category: items[h.code].category, name: h.name, unit: h.unit, type: h.type, phone: h.phone,
       note: h.note, by: h.by, at: h.at, hasId: !!h.idPhotoId };
   });
@@ -650,7 +766,7 @@ function listHandovers(token) {
 
 function getIdPhoto(token, code) {
   auth_(token, 'claims.view');
-  const h = handovers_().filter(function (r) { return r.code === code; })[0];
+  const h = handoverOf_(code);
   if (!h || !h.idPhotoId) return '';
   return 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(h.idPhotoId).getBlob().getBytes());
 }
@@ -658,7 +774,7 @@ function getIdPhoto(token, code) {
 // ================================================================ reports & charts
 
 function reportRows_(f) {
-  return items_(false).filter(function (x) { return matches_(x, f); });
+  return items_().filter(function (x) { return matches_(x, f); });
 }
 
 function getReport(token, f) {
