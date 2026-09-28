@@ -75,7 +75,6 @@ function setup() {
   itemsSheet_(); handoversSheet_(); historySheet_(); usersSheet_(); permsSheet_(); listsSheet_();
   folder_('PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات');
   folder_('IDS_FOLDER', 'مفقودات مراسي - صور البطايق (خاص)');
-  folder_('THUMBS_FOLDER', 'مفقودات مراسي - صور مصغّرة');
   const keep = [ITEMS_SHEET, HANDOVERS_SHEET, HISTORY_SHEET, USERS_SHEET, PERMS_SHEET, LISTS_SHEET];
   ss.getSheets().forEach(function (s) {
     if (keep.indexOf(s.getName()) < 0 && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
@@ -480,7 +479,16 @@ function clientItem_(x) { const o = Object.assign({}, x); delete o.row; delete o
 function attachThumbs_(list) {
   if (!list.length) return list;
   const sh = itemsSheet_(), col = IC['مصغّرة'] + 1;
-  const refs = list.map(function (x) { return x.thumbRef !== undefined ? x.thumbRef : String(sh.getRange(x.row, col).getValue() || ''); });
+  // الصورة المصغّرة محفوظة جوه الشيت: بنقرا خانات الصفحة دي بس
+  const need = list.filter(function (x) { return x.thumbRef === undefined; });
+  if (need.length) {
+    const lo = Math.min.apply(null, need.map(function (x) { return x.row; })), hi = Math.max.apply(null, need.map(function (x) { return x.row; }));
+    if (hi - lo < 300) {
+      const vals = sh.getRange(lo, col, hi - lo + 1, 1).getValues();
+      need.forEach(function (x) { x.thumbRef = String(vals[x.row - lo][0] || ''); });
+    } else need.forEach(function (x) { x.thumbRef = String(sh.getRange(x.row, col).getValue() || ''); });
+  }
+  const refs = list.map(function (x) { return x.thumbRef; });
   const cache = CacheService.getScriptCache();
   const ids = refs.filter(function (r) { return r && r.indexOf('data:') !== 0; });
   const hit = ids.length ? cache.getAll(ids.map(function (id) { return 'th:' + id; })) : {};
@@ -488,7 +496,7 @@ function attachThumbs_(list) {
   list.forEach(function (x, i) {
     const ref = refs[i];
     if (!ref) return;
-    if (ref.indexOf('data:') === 0) { x.thumb = ref; return; }          // سطور قديمة كانت الصورة جوه الشيت
+    if (ref.indexOf('data:') === 0) { x.thumb = ref; return; }          // الطريقة العادية: الصورة جوه الشيت
     let t = hit['th:' + ref];
     if (!t) {
       try { t = 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(ref).getBlob().getBytes()); put['th:' + ref] = t; }
@@ -591,10 +599,8 @@ function savePhoto_(dataUrl, folderKey, folderName, name) {
   if (bytes.length > 6 * 1024 * 1024) throw new Error('الصورة كبيرة قوي.');
   return folder_(folderKey, folderName).createFile(Utilities.newBlob(bytes, m[1], name + '.jpg')).getId();
 }
-function saveThumb_(thumb, code) {
-  if (!/^data:image\/jpeg;base64,/.test(thumb || '') || thumb.length > 60000) return '';
-  return savePhoto_(thumb, 'THUMBS_FOLDER', 'مفقودات مراسي - صور مصغّرة', 'thumb_' + code);
-}
+/** الصورة المصغّرة بتتحفظ جوه الشيت نفسه (زي الأول). */
+function thumbCell_(thumb) { return /^data:image\/jpeg;base64,/.test(thumb || '') && thumb.length < 45000 ? thumb : ''; }
 function trash_(id) { if (id && id.indexOf('data:') !== 0) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} } }
 
 function nextCode_() {
@@ -642,7 +648,7 @@ function createItem(token, d, photo, thumb) {
     row[IC['اسم اللي لقاها']] = f.finderName; row[IC['موبايل اللي لقاها']] = f.finderPhone ? "'" + f.finderPhone : ''; row[IC['تبعيته']] = f.finderType;
     row[IC['مشرف الأمن المستلم']] = f.supervisor; row[IC['وقت التسليم للأمن']] = f.toOffice ? now : '';
     row[IC['الحالة']] = STATUSES[status]; row[IC['سجّلها']] = u.name + ' (' + u.username + ')'; row[IC['وقت التسجيل']] = now;
-    row[IC['صورة (Drive ID)']] = photoId; row[IC['مصغّرة']] = photoId ? saveThumb_(thumb, code) : '';
+    row[IC['صورة (Drive ID)']] = photoId; row[IC['مصغّرة']] = photoId ? thumbCell_(thumb) : '';
     itemsSheet_().appendRow(row);
     history_(code, '', status, u);
     return { code: code };
@@ -669,7 +675,7 @@ function updateItem(token, code, d, photo, thumb) {
     }
     if (photo) {
       set('صورة (Drive ID)', savePhoto_(photo, 'PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات', code));
-      set('مصغّرة', saveThumb_(thumb, code));
+      set('مصغّرة', thumbCell_(thumb));
       trash_(x.photoId); trash_(x.thumbRef);
     }
     set('آخر تعديل', u.username + ' ' + stamp_(new Date()));

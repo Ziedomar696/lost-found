@@ -595,7 +595,7 @@ dialog form,dialog .body{padding:16px;display:grid;gap:12px}
   $("#newBtn").addEventListener("click", function(){ openItemForm(null); });
   $("#photoFile").addEventListener("change", function(e){
     var f = e.target.files && e.target.files[0]; e.target.value = ""; if(!f) return;
-    Promise.all([shrink(f, 1200, 0.7), shrink(f, 200, 0.65)]).then(function(r){ photoData = r[0]; thumbData = r[1]; var pv = $("#photoPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+r[1]+"')"; })
+    Promise.all([shrink(f, 1200, 0.7), shrink(f, 240, 0.7)]).then(function(r){ photoData = r[0]; thumbData = r[1]; var pv = $("#photoPv"); pv.textContent = ""; pv.style.backgroundImage = "url('"+r[1]+"')"; })
       .catch(function(err){ $("#iMsg").textContent = err.message; });
   });
   $("#itemForm").addEventListener("submit", function(e){
