@@ -27,6 +27,10 @@ const SETUP_CODE = 'MRS-7314';
    لو سبته فاضي والسكريبت مش مربوط بشيت، الأبلكيشن هيعمل شيت جديد لوحده في الدرايف بتاعك. */
 const SHEET_ID = '';
 
+/* نقل بيانات البرنامج القديم (اختياري): حط هنا الـ ID بتاع الشيت القديم (من لينكه بين /d/ و /edit)
+   وشغّل الدالة importOld من المحرر. شرحها جنبها تحت. */
+const OLD_SHEET_ID = '';
+
 const FILES_FOLDER = 'مفقودات مراسي - ملفات';
 const TZ = 'Africa/Cairo';
 const ROLES = { admin: 'الإدارة', keeper: 'أمين مخزن', supervisor: 'مشرف', cr: 'الكنترول روم' };
@@ -105,7 +109,16 @@ function hash_(salt, pw) {
   return Utilities.base64Encode(d);
 }
 function makePass_(pw) { const salt = Utilities.getUuid().replace(/-/g, ''); return salt + '$' + hash_(salt, pw); }
-function checkPass_(stored, pw) { const p = String(stored || '').split('$'); return p.length === 2 && hash_(p[0], pw) === p[1]; }
+function checkPass_(stored, pw) {
+  const p = String(stored || '').split('$');
+  if (p.length === 3 && p[0] === 'old') return oldHash_(p[1], pw) === p[2];   // حسابات منقولة من البرنامج القديم
+  return p.length === 2 && hash_(p[0], pw) === p[1];
+}
+function oldHash_(salt, pw) {
+  let h = String(pw);
+  for (let i = 0; i < 50; i++) h = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + '|' + h, Utilities.Charset.UTF_8));
+  return h;
+}
 function validPass_(pw) { if (String(pw || '').length < 6) throw new Error('كلمة السر لازم تبقى 6 حروف أو أرقام على الأقل.'); }
 function roleCode_(label) { label = String(label || '').trim(); let r = ''; Object.keys(ROLES).forEach(function (k) { if (ROLES[k] === label || k === label) r = k; }); return r; }
 
@@ -668,4 +681,119 @@ function crReply(t, o) {
   if (photos) patch['الصور'] = photos;
   update_('cr', o.id, patch);
   return true;
+}
+
+/* ===================== نقل بيانات البرنامج القديم ===================== */
+/**
+ * شغّلها من المحرر بعد ما تحط OLD_SHEET_ID فوق. بتنقل:
+ *  - الأنواع والأماكن (اللي مش موجودة)،
+ *  - الحسابات بكلمات السر بتاعتها (الإدارة ← الإدارة، مشرف أمن ومدير ← أمين مخزن؛ عدّل الأدوار بعدها من تاب الحسابات)،
+ *  - المفقودات بنفس الكود القديم (علشان الملصقات اللي على الأكياس تفضل زي ما هي) مع صورها،
+ *  - التسليمات مع صور البطايق.
+ * المفقودات اللي اتمسحت في القديم مش بتتنقل. لو شغلتها تاني مش بتكرر حاجة اتنقلت قبل كده،
+ * فلو ظهر في السجل «لسه فاضل»، شغّلها تاني وهتكمّل من مكان ما وقفت.
+ */
+function importOld() {
+  if (!OLD_SHEET_ID) throw new Error('حط ID الشيت القديم في OLD_SHEET_ID في أول الملف.');
+  setup_();
+  const folder = ensureFolder_();
+  const old = SpreadsheetApp.openById(OLD_SHEET_ID);
+  const t0 = Date.now(), LIMIT = 4.5 * 60 * 1000;
+  const out = { cats: 0, locs: 0, users: 0, items: 0, deliv: 0, photos: 0, photoFail: 0 };
+  const read = function (name) {
+    const sh = old.getSheetByName(name);
+    if (!sh || sh.getLastRow() < 2) return [];
+    const v = sh.getDataRange().getValues(), h = v[0].map(function (x) { return String(x).trim(); });
+    return v.slice(1).map(function (r) { const o = {}; h.forEach(function (k, i) { o[k] = r[i]; }); return o; });
+  };
+  const str = function (v) { return v instanceof Date ? Utilities.formatDate(v, TZ, 'yyyy-MM-dd HH:mm') : String(v == null ? '' : v).replace(/^'/, '').trim(); };
+  const when = function (v) {
+    if (v instanceof Date) return v;
+    const t = str(v); if (!t) return '';
+    let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if (m) return toDate_(m[1] + '-' + pad_(m[2], 2) + '-' + pad_(m[3], 2) + (m[4] ? 'T' + pad_(m[4], 2) + ':' + m[5] : ''));
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return toDate_(m[3] + '-' + pad_(m[2], 2) + '-' + pad_(m[1], 2));
+    return '';
+  };
+  const copyPhoto = function (id, name) {
+    id = str(id); if (!id) return '';
+    try { const f = DriveApp.getFileById(id).makeCopy(name, folder); out.photos++; return f.getUrl(); }
+    catch (e) { out.photoFail++; return ''; }
+  };
+  const VALUABLE = ['موبايل', 'محفظة', 'ساعة', 'مجوهرات', 'لابتوب', 'تابلت', 'كاميرا', 'كارنيهات / بطاقات', 'كروت بنك', 'فلوس'];
+  const cats = {}; list_('cats', 'النوع').forEach(function (c) { cats[c] = 1; });
+  const locs = {}; list_('locs', 'المكان').forEach(function (c) { locs[c] = 1; });
+  const addCat = function (c) { if (!c || cats[c]) return; const v = VALUABLE.indexOf(c) >= 0; sheet_('cats').appendRow([c, v ? 90 : 30, v ? 'نعم' : 'لا']); cats[c] = 1; out.cats++; };
+  const addLoc = function (c) { if (!c || locs[c]) return; sheet_('locs').appendRow([c]); locs[c] = 1; out.locs++; };
+
+  // 1) القوائم
+  read('القوائم').forEach(function (r) {
+    if (str(r['نشط']) === 'لا') return;
+    const v = str(r['القيمة']);
+    if (str(r['القائمة']) === 'نوع') addCat(v);
+    if (str(r['القائمة']) === 'مكان') addLoc(v);
+  });
+
+  // 2) الحسابات
+  const accs = {}; accounts_().forEach(function (a) { accs[a.user] = 1; });
+  const ROLE_MAP = { 'الإدارة': 'admin', 'admin': 'admin', 'مشرف أمن': 'keeper', 'security': 'keeper', 'مدير': 'keeper', 'manager': 'keeper' };
+  read('المستخدمين').forEach(function (r) {
+    const user = normUser_(r['اسم المستخدم']);
+    if (!user || accs[user] || !str(r['salt']) || !str(r['hash'])) return;
+    append_('accounts', { 'اسم المستخدم': user, 'الاسم': str(r['الاسم']) || user, 'الصلاحية': ROLES[ROLE_MAP[str(r['الدور'])] || 'keeper'],
+      'الحالة': str(r['نشط']) === 'لا' ? 'موقوف' : 'نشط', 'كلمة السر': 'old$' + str(r['salt']) + '$' + str(r['hash']),
+      'أضافه': 'البرنامج القديم', 'تاريخ الإضافة': when(r['تاريخ الإنشاء']) || new Date() });
+    accs[user] = 1; out.users++;
+  });
+
+  // 3) المفقودات
+  const have = {}; rows_('items').forEach(function (r) { have[String(r['رقم المفقود'])] = 1; });
+  const items = read('المفقودات');
+  let left = 0;
+  items.forEach(function (r) {
+    const code = str(r['الكود']);
+    if (!code || str(r['محذوف']) || have[code]) return;
+    if (Date.now() - t0 > LIMIT) { left++; return; }
+    const cat = str(r['النوع']) || 'أخرى', loc = str(r['المكان']);
+    addCat(cat); addLoc(loc);
+    let photo = copyPhoto(r['صورة (Drive ID)'], code);
+    if (!photo && /^data:image\//.test(str(r['مصغّرة']))) { try { photo = saveFile_(str(r['مصغّرة']), code); } catch (e) {} }
+    const notes = ['منقول من البرنامج القديم · الحالة: ' + (str(r['الحالة']) || '—'),
+      str(r['موبايل اللي لقاها']) ? 'موبايل اللي لقاها: ' + str(r['موبايل اللي لقاها']) : '',
+      str(r['تبعيته']) ? 'تبعيته: ' + str(r['تبعيته']) : '',
+      str(r['وقت التسليم للأمن']) ? 'اتسلّمت للأمن: ' + str(r['وقت التسليم للأمن']) : ''].filter(String).join(' · ');
+    const found = when(r['تاريخ العثور']) || when(r['وقت التسجيل']) || new Date();
+    const tm = str(r['وقت العثور']).match(/(\d{1,2}):(\d{2})/);
+    append_('items', { 'رقم المفقود': code, 'تاريخ العثور': found, 'الوقت': tm ? "'" + pad_(tm[1], 2) + ':' + tm[2] : '', 'النوع': cat,
+      'الوصف': str(r['الوصف']), 'اللون والماركة': '', 'مكان العثور': loc, 'تفاصيل المكان': '', 'المشرف': str(r['مشرف الأمن المستلم']),
+      'القطاع': '', 'اللي لقاه': str(r['اسم اللي لقاها']), 'مكان التخزين': '', 'الصورة': photo, 'تأكيد الإدارة': 'مؤكد',
+      'ملاحظات': notes, 'سجّله': str(r['سجّلها']), 'أكّده': 'البرنامج القديم' });
+    have[code] = 1; out.items++;
+  });
+
+  // 4) التسليمات (لمفقودات اتنقلت بس)
+  const done = {}; rows_('deliv').forEach(function (r) { done[String(r['رقم التسليم'])] = 1; });
+  read('التسليمات').forEach(function (r) {
+    const code = str(r['الكود']), id = 'DL-OLD-' + code;
+    if (!code || !have[code] || done[id]) return;
+    if (Date.now() - t0 > LIMIT) { left++; return; }
+    append_('deliv', { 'رقم التسليم': id, 'رقم المفقود': code, 'رقم الإذن': 'البرنامج القديم', 'تاريخ ووقت التسليم': when(r['وقت التسليم']) || '',
+      'اسم المستلم': str(r['اسم صاحبها']), 'علاقته بالمفقود': '', 'صفته في مراسي': str(r['الصفة']), 'الوحدة': str(r['رقم الوحدة']),
+      'الموبايل': str(r['الموبايل']) ? "'" + str(r['الموبايل']) : '', 'خرّجه من المخزن': str(r['سلّمها']),
+      'صورة الهوية': copyPhoto(r['صورة البطاقة (Drive ID)'], id + '-هوية'), 'ملاحظات': str(r['ملاحظات']), 'سجّله': 'البرنامج القديم' });
+    done[id] = 1; out.deliv++;
+  });
+  // مفقودات كانت «اتسلّمت» في القديم من غير بيانات تسليم: تتسجّل مسلّمة علشان ما تظهرش في المخزن
+  items.forEach(function (r) {
+    const code = str(r['الكود']), id = 'DL-OLD-' + code;
+    if (!code || !have[code] || done[id] || str(r['الحالة']).indexOf('اتسلّمت') < 0) return;
+    append_('deliv', { 'رقم التسليم': id, 'رقم المفقود': code, 'رقم الإذن': 'البرنامج القديم', 'تاريخ ووقت التسليم': when(r['آخر تعديل']) || '',
+      'ملاحظات': 'اتسلّمت في البرنامج القديم من غير بيانات تسليم', 'سجّله': 'البرنامج القديم' });
+    done[id] = 1; out.deliv++;
+  });
+
+  Logger.log('اتنقل: ' + out.items + ' مفقود، ' + out.deliv + ' تسليم، ' + out.users + ' حساب، ' + out.cats + ' نوع، ' + out.locs + ' مكان، ' +
+    out.photos + ' صورة' + (out.photoFail ? ' (' + out.photoFail + ' صورة ما اتنقلتش)' : '') +
+    (left ? '. ⚠️ لسه فاضل ' + left + ' سجل: شغّل importOld تاني وهتكمّل.' : '. خلص النقل كله.'));
 }
