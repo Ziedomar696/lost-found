@@ -1,6 +1,6 @@
 // Service worker: بيخزن شاشة التطبيق علشان تفتح بسرعة ويظهر "مفيش إنترنت" بدل صفحة خطأ.
 // البيانات نفسها دايماً بتروح وتيجي من Google مباشرة (مش بتتخزن هنا).
-const CACHE = "lostfound-shell-v1";
+const CACHE = "lostfound-shell-v2";
 const SHELL = [
   "./",
   "./index.html",

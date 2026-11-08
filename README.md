@@ -3,7 +3,9 @@
 App link: **https://ziedomar696.github.io/lost-found/**
 
 - `apps-script/`: the Google Apps Script project (Code.gs, Index.html, appsscript.json).
-  Data goes to the Google Sheet **مفقودات مراسي**; photos go to two private Drive folders.
+  New version (مخزن مفقودات مراسي): username/password accounts managed by the admin, roles
+  (الإدارة، أمين مخزن، مشرف، الكنترول روم), exit permits, deliveries with signature, loss reports,
+  control-room requests, and editable lists. Deploy as Execute as: Me / Who has access: Anyone.
 - `index.html`, `manifest.webmanifest`, `sw.js`, `icons/`: the installable app (GitHub Pages).
   `APP_URL` in `index.html` points at the Apps Script `/exec` link.
 

@@ -1,859 +1,671 @@
 /**
- * مفقودات مراسي — Google Apps Script
- * البيانات في Google Sheet، والصور في فولدرات خاصة على Google Drive.
+ * نظام مخزن مفقودات مراسي — أبلكيشن ويب على Google Sheets
+ * ملفين في Extensions ← Apps Script:
+ *  - Code.gs: الملف ده.
+ *  - Index.html: الواجهة (اعمله من + ← HTML واسمه Index بالظبط).
  *
- * ⚙️ SETUP_CODE: كود بيتطلب مرة واحدة بس علشان تعمل أول حساب "إدارة".
- *    غيّره لأي كلمة تختارها قبل ما تعمل Deploy.
+ * الدخول باسم مستخدم وكلمة سر، والإدارة هي اللي بتعمل الحسابات وبتحدد دور كل واحد.
+ * مش محتاج إيميلات ولا حسابات جوجل للمستخدمين.
+ *
+ * خطوات التشغيل:
+ *  1) غيّر SETUP_CODE تحت لكود من عندك (ده كود تسجيل أول مدير).
+ *  2) Deploy ← New deployment ← Web app:
+ *       Execute as: Me
+ *       Who has access: Anyone
+ *     والتطبيق على الموبايل: https://ziedomar696.github.io/lost-found/ (بيفتح لينك الـ /exec ده جواه).
+ *  3) افتح اللينك: هيطلب كود التسجيل واسمك واسم مستخدم وكلمة سر، وتبقى المدير.
+ *     الكود بيشتغل بس لما مايكونش فيه أي مدير.
+ *  4) من تاب «الحسابات» اعمل حساب لكل واحد وحدد دوره (إدارة، أمين مخزن، مشرف، كنترول روم).
+ *
+ *  كلمات السر بتتحفظ مشفّرة في تبويب «الحسابات» (محدش يقدر يقراها، والإدارة بتعمل إعادة تعيين بس).
+ *  صور الهوية والتوقيعات في فولدر خاص بحسابك، وبتتعرض جوه الأبلكيشن بس للي داخل بحساب.
  */
-const SETUP_CODE = 'CHANGE-ME';
+const SETUP_CODE = 'MRS-7314';
 
+/* ID الشيت (اختياري): لو السكريبت مش معمول من جوه الشيت (Extensions ← Apps Script)،
+   حط هنا الـ ID بتاع الشيت، وهو الجزء اللي في اللينك بين /d/ و /edit.
+   لو سبته فاضي والسكريبت مش مربوط بشيت، الأبلكيشن هيعمل شيت جديد لوحده في الدرايف بتاعك. */
+const SHEET_ID = '';
+
+const FILES_FOLDER = 'مفقودات مراسي - ملفات';
 const TZ = 'Africa/Cairo';
-const TOKEN_DAYS = 30;
+const ROLES = { admin: 'الإدارة', keeper: 'أمين مخزن', supervisor: 'مشرف', cr: 'الكنترول روم' };
+const SESSION_SECONDS = 21600;   // 6 ساعات، وبتتجدد مع كل استخدام
 
-const ITEMS_SHEET = 'المفقودات';
-const HANDOVERS_SHEET = 'التسليمات';
-const HISTORY_SHEET = 'سجل الحالات';
-const USERS_SHEET = 'المستخدمين';
-const PERMS_SHEET = 'الصلاحيات';
-const LISTS_SHEET = 'القوائم';
-
-const ITEM_HEADERS = ['الكود', 'النوع', 'الوصف', 'المكان', 'تاريخ العثور', 'وقت العثور',
-  'اسم اللي لقاها', 'موبايل اللي لقاها', 'تبعيته', 'مشرف الأمن المستلم', 'وقت التسليم للأمن',
-  'الحالة', 'سجّلها', 'وقت التسجيل', 'آخر تعديل', 'محذوف', 'صورة (Drive ID)', 'مصغّرة'];
-const IC = {}; ITEM_HEADERS.forEach(function (h, i) { IC[h] = i; });
-const HO_HEADERS = ['الكود', 'اسم صاحبها', 'رقم الوحدة', 'الصفة', 'الموبايل', 'ملاحظات', 'سلّمها', 'وقت التسليم', 'صورة البطاقة (Drive ID)'];
-const HC = {}; HO_HEADERS.forEach(function (h, i) { HC[h] = i; });
-const HIST_HEADERS = ['الكود', 'من', 'إلى', 'بواسطة', 'الوقت'];
-const U_HEADERS = ['اسم المستخدم', 'الاسم', 'الدور', 'نشط', 'آخر دخول', 'تاريخ الإنشاء', 'salt', 'hash', 'ver'];
-
-const ROLES = { admin: 'الإدارة', security: 'مشرف أمن', manager: 'مدير' };
-const STATUSES = { found: 'اتلقت', office: 'في مكتب الأمن', requested: 'صاحبها سأل عليها', delivered: 'اتسلّمت لصاحبها' };
-const NEXT = { found: ['office'], office: ['requested'], requested: [], delivered: [] };   // التسليم ليه خطوة خاصة
-const CLAIMANT_TYPES = { owner: 'مالك', renter: 'مستأجر', visitor: 'زيارة', employee: 'موظف' };
-
-const PERMISSIONS = {
-  'items.view': 'عرض المفقودات والبحث',
-  'items.create': 'تسجيل مفقود جديد',
-  'items.edit': 'تعديل المفقود وتحديث حالته',
-  'items.delete': 'مسح المفقود',
-  'claims.view': 'عرض التسليمات وصور البطايق',
-  'claims.approve': 'تسليم المفقود لصاحبه',
-  'reports.view': 'عرض التقارير',
-  'reports.export': 'تصدير التقارير',
-  'charts.view': 'عرض الرسومات البيانية',
-  'users.view': 'عرض المستخدمين',
-  'users.create': 'إضافة مستخدم',
-  'users.edit': 'تعديل المستخدم وكلمة السر',
-  'users.deactivate': 'إيقاف / تشغيل المستخدم',
-  'users.delete': 'مسح المستخدم',
-  'lists.manage': 'تعديل قوائم الأنواع والأماكن'
-};
-const DEFAULT_PERMS = {
-  security: ['items.view', 'items.create', 'items.edit', 'claims.view', 'claims.approve', 'reports.view', 'charts.view'],
-  manager: ['items.view', 'claims.view', 'reports.view', 'reports.export', 'charts.view']
+/* ===================== الجداول ===================== */
+const SHEETS = {
+  accounts: { name: 'الحسابات', headers: ['اسم المستخدم','الاسم','الصلاحية','الحالة','كلمة السر','أضافه','تاريخ الإضافة'] },
+  items:   { name: 'المفقودات', headers: ['رقم المفقود','تاريخ العثور','الوقت','النوع','الوصف','اللون والماركة','مكان العثور','تفاصيل المكان','المشرف','القطاع','اللي لقاه','مكان التخزين','الصورة','تأكيد الإدارة','ملاحظات','سجّله','أكّده'] },
+  permits: { name: 'الأذونات', headers: ['رقم الإذن','رقم المفقود','الغرض','المستلم أو الجهة','الموبايل','صفة المستلم','الوحدة','تاريخ الطلب','قرار الإدارة','تاريخ ووقت القرار','الصلاحية','ملاحظة الإدارة','طلبه'] },
+  deliv:   { name: 'التسليم', headers: ['رقم التسليم','رقم المفقود','رقم الإذن','تاريخ ووقت التسليم','اسم المستلم','علاقته بالمفقود','صفته في مراسي','الوحدة','نوع الهوية','رقم الهوية','الموبايل','وصفه قبل العرض','نتيجة المطابقة','إثبات الملكية','خرّجه من المخزن','الشاهد','حالة المفقود','صورة الهوية','صورة الأبلكيشن أو QR','توقيع المستلم','ملاحظات','سجّله'] },
+  other:   { name: 'جهات_أخرى', headers: ['رقم العملية','رقم المفقود','رقم الإذن','التاريخ','الجهة','رقم المحضر','جهة الاستلام','خرّجه من المخزن','ملاحظات','سجّله'] },
+  reports: { name: 'البلاغات', headers: ['رقم البلاغ','تاريخ البلاغ','الاسم','الموبايل','صفته في مراسي','الوحدة','النوع','الوصف','اللون والماركة','ضاعت من','لحد','المكان المتوقع','تفاصيل المكان','رقم المفقود المطابق','حالة البلاغ','متابعات','سجّله'] },
+  cr:      { name: 'الكنترول_روم', headers: ['رقم البلاغ','تاريخ ووقت الإرسال','الأولوية','المطلوب','الأماكن والكاميرات','فترة المراجعة','خط سير صاحب البلاغ','أوصاف صاحب البلاغ','نتيجة المراجعة','الكاميرات اللي اتراجعت','الإفادة','الصور','تاريخ ووقت الرد','ملخص البلاغ','رد بواسطة'] },
+  cats:    { name: 'الأنواع', headers: ['النوع','مدة الحفظ','ثمين'], seed: [['هواتف وأجهزة إلكترونية',90,'نعم'],['محافظ ونقود',90,'نعم'],['مجوهرات وساعات',90,'نعم'],['بطاقات هوية ومستندات',14,'نعم'],['مفاتيح',60,'لا'],['حقائب',60,'لا'],['نظارات',30,'لا'],['ملابس وأحذية',30,'لا'],['مستلزمات شاطئ ومناشف',14,'لا'],['ألعاب أطفال',30,'لا'],['مأكولات ومشروبات',1,'لا'],['أخرى',30,'لا']] },
+  locs:    { name: 'أماكن_العثور', headers: ['المكان'], seed: [['البوابة الرئيسية'],['البوابات الفرعية'],['الشاطئ'],['المارينا'],['الممشى والكورنيش'],['المطاعم والكافيهات'],['الفلل والشاليهات'],['الفنادق'],['النوادي والملاعب'],['الجراجات ومواقف السيارات'],['أخرى']] },
+  stores:  { name: 'أماكن_التخزين', headers: ['المكان'], seed: [['الخزنة (للثمين)'],['رف A'],['رف B'],['رف C'],['صندوق الملابس'],['صندوق المستلزمات']] },
+  staff:   { name: 'الموظفين', headers: ['الاسم'], seed: [] },
+  parties: { name: 'الجهات', headers: ['الجهة'], seed: [['تسليم لقسم الشرطة'],['تسليم للإدارة'],['تبرع لجهة خيرية'],['إعدام / تخلص']] },
+  prios:   { name: 'الأولويات', headers: ['الأولوية','المهلة'], seed: [['عاجل جداً',1],['عاجل',4],['عادي',24]] }
 };
 
-const DEFAULT_CATEGORIES = ['موبايل', 'محفظة', 'مفاتيح', 'نضارة شمس', 'نضارة سباحة', 'ساعة', 'مجوهرات', 'إكسسوارات', 'شنطة',
-  'لابتوب', 'تابلت', 'كاميرا', 'سماعات', 'شاحن', 'هدوم', 'أحذية', 'لعب أطفال', 'كورة', 'كارنيهات / بطاقات', 'كروت بنك', 'فلوس',
-  'مفاتيح عربية', 'شمسية', 'حاجات بحر / بسين', 'أدوات رياضية', 'أدوية / متعلقات شخصية', 'حيوان أليف', 'أخرى'];
-const DEFAULT_PLACES = ['Arezzo', 'Verona', 'Isola', 'Veneto', 'Salerno', 'Catania 1', 'Catania 2', 'Greek', 'Riva lagoon', 'Riva Views',
-  'Lea', 'Faya', 'Skaia', 'Altea', 'Valencia', 'Blanca 1', 'Blanca 2', 'Blanca 3', 'Blanca 4', 'Verdi', 'Vectoria', 'Marassi Bay',
-  'Celia', 'Safi Sands', 'Marina 1', 'Marina 2', 'Marina Views & Front', 'Marina West', 'B.C.H', 'North beach'];
-
-// ================================================================ web app
-
+/* ===================== الدخول ===================== */
 function doGet() {
+  setup_();
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('مفقودات مراسي')
+    .setTitle('مخزن مفقودات مراسي')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);   // علشان يفتح جوه تطبيق GitHub
 }
 
-/** شغّلها من المحرر بعد أي تحديث: بتجهز الشيت والفولدرات. */
+/** اختياري: من المحرر، بتجهّز التبويبات وفولدر الصور. */
 function setup() {
+  setup_();
+  const folder = ensureFolder_();
+  Logger.log('تم. الشيت: ' + ss_().getUrl() + ' · فولدر الصور: ' + folder.getUrl() + (hasAdmin_() ? '' : ' · مفيش مدير لسه: افتح الأبلكيشن وسجّل بكود التسجيل.'));
+}
+
+function setup_() {
   const ss = ss_();
-  itemsSheet_(); handoversSheet_(); historySheet_(); usersSheet_(); permsSheet_(); listsSheet_();
-  folder_('PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات');
-  folder_('IDS_FOLDER', 'مفقودات مراسي - صور البطايق (خاص)');
-  const keep = [ITEMS_SHEET, HANDOVERS_SHEET, HISTORY_SHEET, USERS_SHEET, PERMS_SHEET, LISTS_SHEET];
-  ss.getSheets().forEach(function (s) {
-    if (keep.indexOf(s.getName()) < 0 && s.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(s);
+  Object.keys(SHEETS).forEach(function (k) {
+    const def = SHEETS[k];
+    let sh = ss.getSheetByName(def.name);
+    if (!sh) {
+      sh = ss.insertSheet(def.name);
+      sh.setRightToLeft(true);
+      sh.getRange(1, 1, 1, def.headers.length).setValues([def.headers]).setFontWeight('bold').setBackground('#0B6B66').setFontColor('#FFFFFF');
+      sh.setFrozenRows(1);
+      if (def.seed && def.seed.length) sh.getRange(2, 1, def.seed.length, def.seed[0].length).setValues(def.seed);
+      return;
+    }
+    const last = Math.max(1, sh.getLastColumn());
+    const have = sh.getRange(1, 1, 1, last).getValues()[0].map(String);
+    const missing = def.headers.filter(function (h) { return have.indexOf(h) < 0; });
+    if (missing.length) {
+      const start = have.filter(String).length + 1;
+      sh.getRange(1, start, 1, missing.length).setValues([missing]).setFontWeight('bold').setBackground('#0B6B66').setFontColor('#FFFFFF');
+    }
   });
-  Logger.log('الشيت جاهز: ' + ss.getUrl());
-  Logger.log(needsSetup() ? 'لسه مفيش حساب إدارة: افتح التطبيق واعمل أول حساب بـ SETUP_CODE.' : 'حسابات الإدارة موجودة.');
 }
 
-function ss_() {
-  let ss = null;
-  try { ss = SpreadsheetApp.getActive(); } catch (e) {}
-  if (ss) return ss;
+function ensureFolder_() {
   const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty('SHEET_ID');
-  if (id) return SpreadsheetApp.openById(id);
-  ss = SpreadsheetApp.create('مفقودات مراسي');
-  props.setProperty('SHEET_ID', ss.getId());
-  return ss;
-}
-
-function folder_(key, name) {
-  const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty(key);
+  const id = props.getProperty('FILES_FOLDER_ID');
   if (id) { try { return DriveApp.getFolderById(id); } catch (e) {} }
-  const f = DriveApp.createFolder(name);          // خاص: محدش يشوفه غير صاحب الحساب
-  props.setProperty(key, f.getId());
-  return f;
+  const folder = DriveApp.createFolder(FILES_FOLDER);
+  try { folder.setSharing(DriveApp.Access.PRIVATE, DriveApp.Permission.NONE); } catch (e) {}
+  props.setProperty('FILES_FOLDER_ID', folder.getId());
+  return folder;
 }
 
-// ================================================================ sheets
-
-const _sheets = {};
-function ensureSheet_(name, headers, init) {
-  if (_sheets[name]) return _sheets[name];
-  const ss = ss_();
-  let sh = ss.getSheetByName(name);
-  const style = function (r) { r.setFontWeight('bold').setBackground('#0F4C5C').setFontColor('#FFFFFF'); };
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    sh.getRange(1, 1, sh.getMaxRows(), headers.length).setNumberFormat('@');
-    style(sh.getRange(1, 1, 1, headers.length).setValues([headers]));
-    sh.setFrozenRows(1);
-    sh.setRightToLeft(true);
-    if (init) init(sh);
-  } else {
-    const w = sh.getLastColumn();
-    if (w < headers.length) style(sh.getRange(1, w + 1, 1, headers.length - w).setValues([headers.slice(w)]));
-  }
-  _sheets[name] = sh;
-  return sh;
-}
-function itemsSheet_() {
-  return ensureSheet_(ITEMS_SHEET, ITEM_HEADERS, function (sh) {
-    sh.hideColumns(IC['صورة (Drive ID)'] + 1, 2);
-    sh.setColumnWidth(IC['الوصف'] + 1, 260);
-  });
-}
-function handoversSheet_() { return ensureSheet_(HANDOVERS_SHEET, HO_HEADERS, function (sh) { sh.hideColumns(HC['صورة البطاقة (Drive ID)'] + 1, 1); }); }
-function historySheet_() { return ensureSheet_(HISTORY_SHEET, HIST_HEADERS); }
-function usersSheet_() { return ensureSheet_(USERS_SHEET, U_HEADERS, function (sh) { sh.hideColumns(7, 3); }); }
-function permsSheet_() {
-  return ensureSheet_(PERMS_SHEET, ['الدور', 'الصلاحية', 'مسموح', 'الوصف'], function (sh) {
-    const rows = [];
-    ['security', 'manager'].forEach(function (role) {
-      Object.keys(PERMISSIONS).forEach(function (p) { rows.push([role, p, DEFAULT_PERMS[role].indexOf(p) >= 0 ? 'نعم' : 'لا', ROLES[role] + ' — ' + PERMISSIONS[p]]); });
-    });
-    sh.getRange(2, 1, rows.length, 4).setValues(rows);
-  });
-}
-function listsSheet_() {
-  return ensureSheet_(LISTS_SHEET, ['القائمة', 'القيمة', 'نشط'], function (sh) {
-    const rows = DEFAULT_CATEGORIES.map(function (c) { return ['نوع', c, 'نعم']; })
-      .concat(DEFAULT_PLACES.map(function (p) { return ['مكان', p, 'نعم']; }));
-    sh.getRange(2, 1, rows.length, 3).setValues(rows);
-  });
-}
-
-function values_(sh, width) {
-  const n = sh.getLastRow() - 1;
-  if (n < 1) return [];
-  return sh.getRange(2, 1, n, width).getValues().map(function (r) {
-    return r.map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; });
-  });
-}
-
-// ================================================================ users & auth
-
-function users_() {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('users');
-  if (hit) return JSON.parse(hit);
-  const out = [];
-  values_(usersSheet_(), U_HEADERS.length).forEach(function (r, i) {
-    if (!r[0]) return;
-    out.push({ row: i + 2, username: String(r[0]).trim().toLowerCase(), name: String(r[1]), role: roleKey_(r[2]),
-      active: String(r[3]).trim() !== 'لا', lastLogin: String(r[4] || ''), created: String(r[5] || ''),
-      salt: String(r[6]), hash: String(r[7]), ver: Number(r[8]) || 1 });
-  });
-  cache.put('users', JSON.stringify(out), 300);
-  return out;
-}
-function dropCache_(k) { CacheService.getScriptCache().remove(k); }
-function findUser_(username) {
-  username = String(username || '').trim().toLowerCase();
-  return users_().filter(function (u) { return u.username === username; })[0] || null;
-}
-function roleKey_(v) {
-  v = String(v || '').trim();
-  for (const k in ROLES) if (k === v || ROLES[k] === v) return k;
-  return 'security';
-}
-function publicUser_(u) {
-  return { username: u.username, name: u.name, role: u.role, roleLabel: ROLES[u.role], active: u.active, lastLogin: u.lastLogin, created: u.created };
-}
-
+/* ===================== الحسابات وكلمات السر ===================== */
+function normUser_(u) { return String(u || '').trim().toLowerCase(); }
 function hash_(salt, pw) {
-  let h = String(pw);
-  for (let i = 0; i < 50; i++) h = Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + '|' + h, Utilities.Charset.UTF_8));
-  return h;
+  const d = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, salt + '|' + pw, Utilities.Charset.UTF_8);
+  return Utilities.base64Encode(d);
 }
-function secret_() {
-  const p = PropertiesService.getScriptProperties();
-  let s = p.getProperty('TOKEN_SECRET');
-  if (!s) { s = Utilities.getUuid() + Utilities.getUuid(); p.setProperty('TOKEN_SECRET', s); }
-  return s;
-}
-function sign_(payload) { return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payload, secret_())); }
-function makeToken_(u) {
-  const p = u.username + '|' + (Date.now() + TOKEN_DAYS * 864e5) + '|' + u.ver;
-  return Utilities.base64EncodeWebSafe(p) + '.' + sign_(p);
-}
+function makePass_(pw) { const salt = Utilities.getUuid().replace(/-/g, ''); return salt + '$' + hash_(salt, pw); }
+function checkPass_(stored, pw) { const p = String(stored || '').split('$'); return p.length === 2 && hash_(p[0], pw) === p[1]; }
+function validPass_(pw) { if (String(pw || '').length < 6) throw new Error('كلمة السر لازم تبقى 6 حروف أو أرقام على الأقل.'); }
+function roleCode_(label) { label = String(label || '').trim(); let r = ''; Object.keys(ROLES).forEach(function (k) { if (ROLES[k] === label || k === label) r = k; }); return r; }
 
-/** perms_(): { security: {perm: true}, manager: {...} } — الإدارة ليها كل حاجة. */
-function perms_() {
-  const cache = CacheService.getScriptCache();
-  const hit = cache.get('perms');
-  if (hit) return JSON.parse(hit);
-  const out = { security: {}, manager: {} };
-  values_(permsSheet_(), 3).forEach(function (r) {
-    const role = roleKey_(r[0]);
-    if (out[role] && PERMISSIONS[r[1]]) out[role][r[1]] = String(r[2]).trim() === 'نعم';
+function accounts_() {
+  const sh = sheet_('accounts');
+  if (!sh) return [];
+  return rows_('accounts').map(function (r) {
+    return { user: normUser_(r['اسم المستخدم']), name: String(r['الاسم'] || ''), role: roleCode_(r['الصلاحية']),
+      active: String(r['الحالة']).trim() !== 'موقوف', pass: String(r['كلمة السر'] || ''), by: String(r['أضافه'] || ''), at: iso_(r['تاريخ الإضافة']) };
   });
-  cache.put('perms', JSON.stringify(out), 300);
-  return out;
 }
-function can_(u, perm) { return u.role === 'admin' || !!(perms_()[u.role] || {})[perm]; }
-function myPerms_(u) { return Object.keys(PERMISSIONS).filter(function (p) { return can_(u, p); }); }
-
-/** بيرجع المستخدم أو بيرمي AUTH. perm اختياري. */
-function auth_(token, perm) {
-  const parts = String(token || '').split('.');
-  if (parts.length !== 2) throw new Error('AUTH');
-  let p;
-  try { p = Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString(); } catch (e) { throw new Error('AUTH'); }
-  if (sign_(p) !== parts[1]) throw new Error('AUTH');
-  const f = p.split('|');
-  if (Number(f[1]) < Date.now()) throw new Error('AUTH');
-  const u = findUser_(f[0]);
-  if (!u || !u.active || String(u.ver) !== f[2]) throw new Error('AUTH');
-  if (perm && !can_(u, perm)) throw new Error('مش مسموح لحسابك بالعملية دي.');
-  return u;
+function hasAdmin_() { return accounts_().some(function (u) { return u.active && u.role === 'admin'; }); }
+function putAccount_(u, by) {
+  const sh = sheet_('accounts'), h = headers_(sh), last = sh.getLastRow();
+  const keys = last < 2 ? [] : sh.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return normUser_(r[0]); });
+  const i = keys.indexOf(u.user);
+  const patch = {};
+  if (u.name !== undefined) patch['الاسم'] = u.name;
+  if (u.role !== undefined) patch['الصلاحية'] = ROLES[u.role];
+  if (u.active !== undefined) patch['الحالة'] = u.active ? 'نشط' : 'موقوف';
+  if (u.password) patch['كلمة السر'] = makePass_(u.password);
+  if (i >= 0) {
+    Object.keys(patch).forEach(function (name) { const c = h.indexOf(name); if (c >= 0) sh.getRange(i + 2, c + 1).setValue(patch[name]); });
+  } else {
+    patch['اسم المستخدم'] = u.user; patch['أضافه'] = by; patch['تاريخ الإضافة'] = new Date();
+    append_('accounts', patch);
+  }
 }
 
-function lists_() {
+/* ===================== الجلسات ===================== */
+function newSession_(user) {
+  const t = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  CacheService.getScriptCache().put('s_' + t, user, SESSION_SECONDS);
+  return t;
+}
+function me_(t) {
   const cache = CacheService.getScriptCache();
-  const hit = cache.get('lists');
-  if (hit) return JSON.parse(hit);
-  const out = { categories: [], places: [], all: [] };
-  values_(listsSheet_(), 3).forEach(function (r) {
-    const kind = String(r[0]).trim(), val = String(r[1]).trim(), on = String(r[2]).trim() !== 'لا';
-    if (!val) return;
-    out.all.push({ kind: kind === 'مكان' ? 'place' : 'category', value: val, active: on });
-    if (on) (kind === 'مكان' ? out.places : out.categories).push(val);
+  const user = t ? cache.get('s_' + t) : null;
+  if (!user) throw new Error('AUTH: الجلسة انتهت، ادخل تاني.');
+  const u = accounts_().filter(function (x) { return x.user === user; })[0];
+  if (!u || !u.active || !u.role) { cache.remove('s_' + t); throw new Error('AUTH: الحساب ده موقوف أو اتشال.'); }
+  cache.put('s_' + t, user, SESSION_SECONDS);
+  return { user: u.user, name: u.name, role: u.role };
+}
+function need_(t, roles) {
+  const m = me_(t);
+  if (roles.indexOf(m.role) < 0) throw new Error('العملية دي مش متاحة لصلاحيتك.');
+  return m;
+}
+
+/** الواجهة بتسأل: محتاج تسجيل أول مدير؟ */
+function needsSetup() { setup_(); return !hasAdmin_(); }
+
+/** تسجيل أول مدير بكود التسجيل (بيشتغل بس لو مفيش مدير). */
+function registerFirstAdmin(o) {
+  o = clean_(o);
+  const user = normUser_(o.user);
+  if (!o.name) throw new Error('اكتب اسمك.');
+  if (!/^\S{3,30}$/.test(user)) throw new Error('اسم المستخدم من 3 لـ 30 حرف ومن غير مسافات.');
+  validPass_(o.password);
+  return withLock_(function () {
+    setup_();
+    if (hasAdmin_()) throw new Error('فيه مدير متسجّل بالفعل. اطلب منه يعملك حساب.');
+    if (String(o.code || '') !== SETUP_CODE) throw new Error('كود التسجيل غلط.');
+    putAccount_({ user: user, name: o.name, role: 'admin', active: true, password: o.password }, user);
+    ensureFolder_();
+    return { token: newSession_(user) };
   });
-  cache.put('lists', JSON.stringify(out), 300);
-  return out;
 }
 
-function boot_(u) {
-  const l = lists_();
-  return { me: publicUser_(u), perms: myPerms_(u), categories: l.categories, places: l.places,
-    statuses: STATUSES, claimantTypes: CLAIMANT_TYPES };
-}
-
-// ---------------------------------------------------------------- login
-
-function needsSetup() { return !users_().some(function (u) { return u.role === 'admin' && u.active; }); }
-
-function setupAdmin(code, username, name, password) {
-  if (SETUP_CODE === 'CHANGE-ME') throw new Error('غيّر SETUP_CODE في أول ملف Code.gs واعمل Deploy بنسخة جديدة الأول.');
-  if (String(code || '').trim() !== SETUP_CODE) throw new Error('كود التفعيل غلط.');
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    if (!needsSetup()) throw new Error('حساب الإدارة معمول قبل كده. سجّل دخول.');
-    writeUser_({ username: username, name: name, role: 'admin', active: true, password: password }, true);
-  } finally { lock.releaseLock(); }
-  return login(username, password);
-}
-
-function login(username, password) {
-  username = String(username || '').trim().toLowerCase();
-  const cache = CacheService.getScriptCache(), key = 'fail:' + username;
-  const fails = Number(cache.get(key)) || 0;
-  if (fails >= 5) throw new Error('محاولات كتير غلط. استنى ١٠ دقايق وجرّب تاني.');
-  const u = findUser_(username);
-  if (!u || !u.active || hash_(u.salt, password) !== u.hash) {
-    cache.put(key, String(fails + 1), 600);
-    throw new Error(u && !u.active ? 'الحساب ده متوقف. كلّم الإدارة.' : 'اسم المستخدم أو كلمة السر غلط.');
-  }
-  cache.remove(key);
-  try { usersSheet_().getRange(u.row, 5).setValue(stamp_(new Date())); dropCache_('users'); } catch (e) {}
-  const out = boot_(u); out.token = makeToken_(u);
-  return out;
-}
-
-function whoami(token) { return boot_(auth_(token)); }
-
-function changeMyPassword(token, oldPw, newPw) {
-  const u = auth_(token);
-  if (hash_(u.salt, oldPw) !== u.hash) throw new Error('كلمة السر الحالية غلط.');
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try { writeUser_({ username: u.username, name: u.name, role: u.role, active: true, password: newPw }, false); }
-  finally { lock.releaseLock(); }
-  return makeToken_(findUser_(u.username));
-}
-
-// ---------------------------------------------------------------- admin: users, permissions, lists
-
-function usersData(token) {
-  const me = auth_(token, 'users.view');
-  return { users: users_().map(publicUser_), roles: ROLES,
-    can: { create: can_(me, 'users.create'), edit: can_(me, 'users.edit'), deactivate: can_(me, 'users.deactivate'), del: can_(me, 'users.delete') },
-    permissions: PERMISSIONS, matrix: perms_(), canPerms: me.role === 'admin',
-    lists: lists_().all, canLists: can_(me, 'lists.manage') };
-}
-
-function saveUser(token, d) {
-  const me = auth_(token, d.isNew ? 'users.create' : 'users.view');
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    const target = findUser_(d.username);
-    if (!d.isNew) {
-      if (!target) throw new Error('المستخدم مش موجود.');
-      const editing = d.name !== target.name || roleKey_(d.role) !== target.role || !!d.password;
-      if (editing && !can_(me, 'users.edit')) throw new Error('مش مسموح لحسابك تعدّل المستخدمين.');
-      if ((d.active !== false) !== target.active && !can_(me, 'users.deactivate')) throw new Error('مش مسموح لحسابك توقف أو تشغّل المستخدمين.');
-      if (roleKey_(d.role) === 'admin' && target.role !== 'admin' && me.role !== 'admin') throw new Error('الإدارة بس اللي تدّي دور الإدارة.');
-      if (target.role === 'admin' && me.role !== 'admin') throw new Error('الإدارة بس اللي تعدّل حساب إدارة.');
-      lastAdminGuard_(target, roleKey_(d.role) !== 'admin' || d.active === false);
-    } else if (roleKey_(d.role) === 'admin' && me.role !== 'admin') {
-      throw new Error('الإدارة بس اللي تعمل حساب إدارة.');
-    }
-    writeUser_(d, !!d.isNew);
-  } finally { lock.releaseLock(); }
-  return usersData(token);
-}
-
-function deleteUser(token, username) {
-  const me = auth_(token, 'users.delete');
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    const t = findUser_(username);
-    if (!t) throw new Error('المستخدم مش موجود.');
-    if (t.username === me.username) throw new Error('مينفعش تمسح حسابك.');
-    if (t.role === 'admin' && me.role !== 'admin') throw new Error('الإدارة بس اللي تمسح حساب إدارة.');
-    lastAdminGuard_(t, true);
-    usersSheet_().deleteRow(t.row);
-    dropCache_('users');
-  } finally { lock.releaseLock(); }
-  return usersData(token);
-}
-
-function lastAdminGuard_(target, removing) {
-  if (target.role !== 'admin' || !removing) return;
-  const others = users_().filter(function (u) { return u.role === 'admin' && u.active && u.username !== target.username; });
-  if (!others.length) throw new Error('لازم يفضل حساب إدارة واحد على الأقل شغال.');
-}
-
-function writeUser_(d, isNew) {
-  const username = String(d.username || '').trim().toLowerCase();
-  if (!/^[a-z0-9._-]{3,30}$/.test(username)) throw new Error('اسم المستخدم لازم يكون ٣ حروف على الأقل، إنجليزي صغير أو أرقام (مثال: ahmed.sec).');
-  const name = clean_(d.name) || username;
-  const role = roleKey_(d.role);
-  const active = d.active !== false;
-  const existing = findUser_(username);
-  if (isNew && existing) throw new Error('اسم المستخدم ده موجود قبل كده.');
-  if (!isNew && !existing) throw new Error('المستخدم مش موجود.');
-  const pw = String(d.password || '');
-  if ((isNew || pw) && pw.length < 6) throw new Error('كلمة السر لازم تبقى ٦ حروف أو أرقام على الأقل.');
-  let salt = existing ? existing.salt : '', hash = existing ? existing.hash : '', ver = existing ? existing.ver : 1;
-  if (pw) { salt = Utilities.getUuid(); hash = hash_(salt, pw); if (existing) ver++; }
-  if (existing && existing.active && !active) ver++;
-  if (existing && existing.role !== role) ver++;
-  const row = [username, name, ROLES[role], active ? 'نعم' : 'لا', existing ? existing.lastLogin : '', existing ? existing.created : stamp_(new Date()), salt, hash, String(ver)];
-  const sh = usersSheet_();
-  if (existing) sh.getRange(existing.row, 1, 1, row.length).setValues([row]); else sh.appendRow(row);
-  dropCache_('users');
-}
-
-function savePermission(token, role, perm, allowed) {
-  const me = auth_(token);
-  if (me.role !== 'admin') throw new Error('الإدارة بس اللي تعدّل الصلاحيات.');
-  role = roleKey_(role);
-  if (role === 'admin' || !PERMISSIONS[perm]) throw new Error('صلاحية غير صحيحة.');
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    const sh = permsSheet_();
-    const rows = values_(sh, 2);
-    let r = -1;
-    rows.forEach(function (x, i) { if (roleKey_(x[0]) === role && x[1] === perm) r = i + 2; });
-    if (r > 0) sh.getRange(r, 3).setValue(allowed ? 'نعم' : 'لا');
-    else sh.appendRow([role, perm, allowed ? 'نعم' : 'لا', ROLES[role] + ' — ' + PERMISSIONS[perm]]);
-    dropCache_('perms');
-  } finally { lock.releaseLock(); }
-  return usersData(token);
-}
-
-function saveListValue(token, kind, value, active) {
-  auth_(token, 'lists.manage');
-  value = clean_(value);
-  if (!value) throw new Error('اكتب القيمة.');
-  const label = kind === 'place' ? 'مكان' : 'نوع';
-  const lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    const sh = listsSheet_();
-    let r = -1;
-    values_(sh, 2).forEach(function (x, i) { if (String(x[0]).trim() === label && String(x[1]).trim() === value) r = i + 2; });
-    if (r > 0) sh.getRange(r, 3).setValue(active === false ? 'لا' : 'نعم');
-    else sh.appendRow([label, value, 'نعم']);
-    dropCache_('lists');
-  } finally { lock.releaseLock(); }
-  return usersData(token);
-}
-
-// ================================================================ items
-
-function statusKey_(v) {
-  v = String(v || '').trim();
-  for (const k in STATUSES) if (k === v || STATUSES[k] === v) return k;
-  return 'found';
-}
-
-// ---- قراءة سريعة: الشيت ممكن يوصل لعشرات الآلاف من السطور ----
-const ITEM_W = IC['صورة (Drive ID)'] + 1;          // كل الأعمدة ما عدا المصغّرة
-
-function rowToItem_(r, row) {
-  return {
-    row: row, code: String(r[IC['الكود']]), category: String(r[IC['النوع']]), description: String(r[IC['الوصف']]),
-    place: String(r[IC['المكان']]), date: String(r[IC['تاريخ العثور']]).slice(0, 10), time: String(r[IC['وقت العثور']]).slice(-5),
-    finderName: String(r[IC['اسم اللي لقاها']]), finderPhone: String(r[IC['موبايل اللي لقاها']]), finderType: String(r[IC['تبعيته']]),
-    supervisor: String(r[IC['مشرف الأمن المستلم']]), officeAt: String(r[IC['وقت التسليم للأمن']]),
-    status: statusKey_(r[IC['الحالة']]), by: String(r[IC['سجّلها']]), createdAt: String(r[IC['وقت التسجيل']]),
-    edited: String(r[IC['آخر تعديل']] || ''), hasPhoto: !!String(r[IC['صورة (Drive ID)']] || '').trim(),
-    photoId: String(r[IC['صورة (Drive ID)']] || ''), thumb: ''
-  };
-}
-function live_(r) { return r[IC['الكود']] && !String(r[IC['محذوف']] || '').trim(); }
-
-/** كل المفقودات (غير الممسوحة)، الأحدث الأول — من غير الصور المصغّرة. */
-function items_() {
-  const out = [];
-  const rows = values_(itemsSheet_(), ITEM_W);
-  for (let i = rows.length - 1; i >= 0; i--) if (live_(rows[i])) out.push(rowToItem_(rows[i], i + 2));
-  return out;
-}
-
-/** آخر n مفقود (الأحدث الأول) من غير ما نقرا الشيت كله. */
-function latestItems_(n) {
-  const sh = itemsSheet_(), last = sh.getLastRow(), out = [];
-  let end = last;
-  while (end >= 2 && out.length < n) {
-    const start = Math.max(2, end - Math.max(n * 2, 100) + 1);
-    const rows = sh.getRange(start, 1, end - start + 1, ITEM_W).getValues().map(function (r) {
-      return r.map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; });
-    });
-    for (let i = rows.length - 1; i >= 0 && out.length < n; i--) if (live_(rows[i])) out.push(rowToItem_(rows[i], start + i));
-    end = start - 1;
-  }
-  return out;
-}
-
-/** سطر المفقود بالكود (بحث مباشر بدل قراية الشيت كله). */
-function rowOfCode_(sh, code) {
-  code = String(code || '').trim();
-  if (!code || sh.getLastRow() < 2) return 0;
-  const hit = sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(code).matchEntireCell(true).findNext();
-  return hit ? hit.getRow() : 0;
-}
-function item_(code) {
-  const sh = itemsSheet_();
-  const row = rowOfCode_(sh, code);
-  if (!row) return null;
-  const r = sh.getRange(row, 1, 1, ITEM_HEADERS.length).getValues()[0].map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; });
-  if (!live_(r)) return null;
-  const x = rowToItem_(r, row);
-  x.thumbRef = String(r[IC['مصغّرة']] || '');
-  return x;
-}
-function clientItem_(x) { const o = Object.assign({}, x); delete o.row; delete o.photoId; delete o.thumbRef; return o; }
-
-/** الصور المصغّرة لمجموعة مفقودات: من الكاش، وإلا من ملفاتها على Drive. */
-function attachThumbs_(list) {
-  if (!list.length) return list;
-  const sh = itemsSheet_(), col = IC['مصغّرة'] + 1;
-  // الصورة المصغّرة محفوظة جوه الشيت: بنقرا خانات الصفحة دي بس
-  const need = list.filter(function (x) { return x.thumbRef === undefined; });
-  if (need.length) {
-    const lo = Math.min.apply(null, need.map(function (x) { return x.row; })), hi = Math.max.apply(null, need.map(function (x) { return x.row; }));
-    if (hi - lo < 300) {
-      const vals = sh.getRange(lo, col, hi - lo + 1, 1).getValues();
-      need.forEach(function (x) { x.thumbRef = String(vals[x.row - lo][0] || ''); });
-    } else need.forEach(function (x) { x.thumbRef = String(sh.getRange(x.row, col).getValue() || ''); });
-  }
-  const refs = list.map(function (x) { return x.thumbRef; });
+function login(user, password) {
+  user = normUser_(user);
   const cache = CacheService.getScriptCache();
-  const ids = refs.filter(function (r) { return r && r.indexOf('data:') !== 0; });
-  const hit = ids.length ? cache.getAll(ids.map(function (id) { return 'th:' + id; })) : {};
-  const put = {};
-  list.forEach(function (x, i) {
-    const ref = refs[i];
-    if (!ref) return;
-    if (ref.indexOf('data:') === 0) { x.thumb = ref; return; }          // الطريقة العادية: الصورة جوه الشيت
-    let t = hit['th:' + ref];
-    if (!t) {
-      try { t = 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(ref).getBlob().getBytes()); put['th:' + ref] = t; }
-      catch (e) { t = ''; }
-    }
-    x.thumb = t;
-  });
-  if (Object.keys(put).length) { try { cache.putAll(put, 21600); } catch (e) {} }
-  return list;
-}
-
-function matches_(x, f) {
-  f = f || {};
-  if (f.status && x.status !== f.status) return false;
-  if (f.category && x.category !== f.category) return false;
-  if (f.place && x.place !== f.place) return false;
-  if (f.from && x.date < f.from) return false;
-  if (f.to && x.date > f.to) return false;
-  if (f.q) {
-    const q = String(f.q).toLowerCase();
-    if ([x.code, x.description, x.category, x.place, x.finderName, x.supervisor].join(' ').toLowerCase().indexOf(q) < 0) return false;
+  const fails = Number(cache.get('f_' + user) || 0);
+  if (fails >= 5) throw new Error('محاولات كتير غلط. استنى 10 دقايق وجرّب تاني.');
+  const u = accounts_().filter(function (x) { return x.user === user; })[0];
+  if (!u || !checkPass_(u.pass, String(password || ''))) {
+    cache.put('f_' + user, String(fails + 1), 600);
+    throw new Error('اسم المستخدم أو كلمة السر غلط.');
   }
+  if (!u.active || !u.role) throw new Error('الحساب ده موقوف. كلّم الإدارة.');
+  cache.remove('f_' + user);
+  return { token: newSession_(user) };
+}
+function logout(t) { if (t) CacheService.getScriptCache().remove('s_' + t); return true; }
+
+function changePassword(t, oldPw, newPw) {
+  const m = me_(t);
+  const u = accounts_().filter(function (x) { return x.user === m.user; })[0];
+  if (!checkPass_(u.pass, String(oldPw || ''))) throw new Error('كلمة السر الحالية غلط.');
+  validPass_(newPw);
+  putAccount_({ user: m.user, password: newPw }, m.user);
   return true;
 }
-function noFilter_(f) { f = f || {}; return !f.status && !f.category && !f.place && !f.from && !f.to && !f.q; }
 
-/** أرقام الحالات: بنقرا ٣ أعمدة بس. */
-function stats_() {
-  const sh = itemsSheet_(), n = sh.getLastRow() - 1;
-  const st = { all: 0, found: 0, office: 0, requested: 0, delivered: 0, today: 0 };
-  if (n < 1) return st;
-  const col = function (h) { return sh.getRange(2, IC[h] + 1, n, 1).getValues(); };
-  const codes = col('الكود'), del = col('محذوف'), status = col('الحالة'), dates = col('تاريخ العثور');
-  const today = dayKey_(new Date());
-  for (let i = 0; i < n; i++) {
-    if (!codes[i][0] || String(del[i][0] || '').trim()) continue;
-    st.all++; st[statusKey_(status[i][0])]++;
-    const d = dates[i][0] instanceof Date ? Utilities.formatDate(dates[i][0], TZ, 'yyyy-MM-dd') : String(dates[i][0]).slice(0, 10);
-    if (d === today) st.today++;
-  }
-  return st;
+/** رقم الصف في الشيت للمفتاح ده في أول عمود (أو -1). */
+function rowOf_(k, key, norm) {
+  const sh = sheet_(k), last = sh.getLastRow();
+  if (last < 2) return -1;
+  const f = norm || function (x) { return String(x).trim(); };
+  const keys = sh.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return f(r[0]); });
+  const i = keys.indexOf(f(key));
+  return i < 0 ? -1 : i + 2;
 }
 
-function listItems(token, f, offset, limit) {
-  auth_(token, 'items.view');
-  offset = Number(offset) || 0; limit = Math.min(Number(limit) || 30, 100);
-  const stats = stats_();
-  let page, total;
-  if (noFilter_(f)) {                                  // الفتحة العادية: آخر المفقودات بس
-    page = latestItems_(offset + limit).slice(offset);
-    total = stats.all;
-  } else {
-    const rows = items_().filter(function (x) { return matches_(x, f); });
-    page = rows.slice(offset, offset + limit); total = rows.length;
-  }
-  return { total: total, items: attachThumbs_(page).map(clientItem_), stats: stats };
-}
-
-/** سطور الكود ده في شيت (السجل / التسليمات). */
-function rowsOfCode_(sh, code, width) {
-  if (sh.getLastRow() < 2) return [];
-  return sh.getRange(2, 1, sh.getLastRow() - 1, 1).createTextFinder(code).matchEntireCell(true).findAll()
-    .map(function (r) { return sh.getRange(r.getRow(), 1, 1, width).getValues()[0].map(function (x) { return x instanceof Date ? Utilities.formatDate(x, TZ, 'yyyy-MM-dd HH:mm') : x; }); });
-}
-function handoverOf_(code) {
-  const r = rowsOfCode_(handoversSheet_(), code, HO_HEADERS.length).pop();
-  if (!r) return null;
-  return { code: String(r[HC['الكود']]), name: String(r[HC['اسم صاحبها']]), unit: String(r[HC['رقم الوحدة']]), type: String(r[HC['الصفة']]),
-    phone: String(r[HC['الموبايل']]), note: String(r[HC['ملاحظات']]), by: String(r[HC['سلّمها']]), at: String(r[HC['وقت التسليم']]),
-    idPhotoId: String(r[HC['صورة البطاقة (Drive ID)']] || '') };
-}
-
-function getItem(token, code) {
-  const u = auth_(token, 'items.view');
-  const x = item_(code);
-  if (!x) throw new Error('المفقود ده مش موجود.');
-  attachThumbs_([x]);
-  const hist = rowsOfCode_(historySheet_(), code, HIST_HEADERS.length)
-    .map(function (r) { return { from: statusKey_(r[1]), to: statusKey_(r[2]), by: String(r[3]), at: String(r[4]) }; });
-  let ho = null;
-  if (can_(u, 'claims.view')) {
-    const h = handoverOf_(code);
-    if (h) { ho = Object.assign({}, h); delete ho.idPhotoId; }
-  }
-  return { item: clientItem_(x), history: hist, handover: ho, next: NEXT[x.status] || [] };
-}
-
-/** الصورة الكاملة للمفقود (base64). */
-function getPhoto(token, code) {
-  auth_(token, 'items.view');
-  const x = item_(code);
-  if (!x || !x.photoId) return '';
-  return 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(x.photoId).getBlob().getBytes());
-}
-
-function savePhoto_(dataUrl, folderKey, folderName, name) {
-  const m = String(dataUrl || '').match(/^data:(image\/(?:jpeg|png|webp));base64,(.+)$/);
-  if (!m) return '';
-  const bytes = Utilities.base64Decode(m[2]);
-  if (bytes.length > 6 * 1024 * 1024) throw new Error('الصورة كبيرة قوي.');
-  return folder_(folderKey, folderName).createFile(Utilities.newBlob(bytes, m[1], name + '.jpg')).getId();
-}
-/** الصورة المصغّرة بتتحفظ جوه الشيت نفسه (زي الأول). */
-function thumbCell_(thumb) { return /^data:image\/jpeg;base64,/.test(thumb || '') && thumb.length < 45000 ? thumb : ''; }
-function trash_(id) { if (id && id.indexOf('data:') !== 0) { try { DriveApp.getFileById(id).setTrashed(true); } catch (e) {} } }
-
-function nextCode_() {
-  const year = Utilities.formatDate(new Date(), TZ, 'yyyy'), prefix = 'LF-' + year + '-';
-  const props = PropertiesService.getScriptProperties(), key = 'SEQ_' + year;
-  let max = Number(props.getProperty(key));
-  if (!max) {                                         // أول مرة في السنة: نحسبها من الشيت
-    max = 0;
-    values_(itemsSheet_(), 1).forEach(function (r) {
-      const c = String(r[0]);
-      if (c.indexOf(prefix) === 0) max = Math.max(max, Number(c.slice(prefix.length)) || 0);
-    });
-  }
-  let code;
-  do { max++; code = prefix + ('000000' + max).slice(-6); } while (rowOfCode_(itemsSheet_(), code));
-  props.setProperty(key, String(max));
-  return code;
-}
-
-function itemFields_(d) {
-  const category = clean_(d.category), place = clean_(d.place);
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(d.date || '') ? d.date : '';
-  const time = /^\d{2}:\d{2}$/.test(d.time || '') ? d.time : '';
-  if (!category) throw new Error('اختار نوع الحاجة.');
-  if (!place) throw new Error('اختار المكان.');
-  if (!date || !time) throw new Error('اكتب تاريخ ووقت العثور.');
-  return { category: category, place: place, date: date, time: time, description: clean_(d.description, 1000),
-    finderName: clean_(d.finderName), finderPhone: digits_(d.finderPhone), finderType: clean_(d.finderType), supervisor: clean_(d.supervisor), toOffice: d.toOffice === true };
-}
-
-function createItem(token, d, photo, thumb) {
-  const u = auth_(token, 'items.create');
-  const f = itemFields_(d);
-  const lock = LockService.getScriptLock(); lock.waitLock(30000);
-  try {
-    const code = nextCode_();
-    const photoId = photo ? savePhoto_(photo, 'PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات', code) : '';
-    const now = stamp_(new Date());
-    // الحاجة بتبقى "في مكتب الأمن" بس لما يتعلّم إنها اتسلّمت، واسم المشرف لوحده مش كفاية
-    if (f.toOffice && !f.supervisor) throw new Error('اكتب اسم مشرف الأمن اللي استلمها.');
-    const status = f.toOffice ? 'office' : 'found';
-    const row = new Array(ITEM_HEADERS.length).fill('');
-    row[IC['الكود']] = code; row[IC['النوع']] = f.category; row[IC['الوصف']] = f.description; row[IC['المكان']] = f.place;
-    row[IC['تاريخ العثور']] = "'" + f.date; row[IC['وقت العثور']] = "'" + f.time;
-    row[IC['اسم اللي لقاها']] = f.finderName; row[IC['موبايل اللي لقاها']] = f.finderPhone ? "'" + f.finderPhone : ''; row[IC['تبعيته']] = f.finderType;
-    row[IC['مشرف الأمن المستلم']] = f.supervisor; row[IC['وقت التسليم للأمن']] = f.toOffice ? now : '';
-    row[IC['الحالة']] = STATUSES[status]; row[IC['سجّلها']] = u.name + ' (' + u.username + ')'; row[IC['وقت التسجيل']] = now;
-    row[IC['صورة (Drive ID)']] = photoId; row[IC['مصغّرة']] = photoId ? thumbCell_(thumb) : '';
-    itemsSheet_().appendRow(row);
-    history_(code, '', status, u);
-    return { code: code };
-  } finally { lock.releaseLock(); }
-}
-
-function updateItem(token, code, d, photo, thumb) {
-  const u = auth_(token, 'items.edit');
-  const f = itemFields_(d);
-  const lock = LockService.getScriptLock(); lock.waitLock(30000);
-  try {
-    const x = item_(code);
-    if (!x) throw new Error('المفقود ده مش موجود.');
-    const sh = itemsSheet_();
-    const set = function (h, v) { sh.getRange(x.row, IC[h] + 1).setValue(v); };
-    set('النوع', f.category); set('الوصف', f.description); set('المكان', f.place); set('تاريخ العثور', "'" + f.date); set('وقت العثور', "'" + f.time);
-    set('اسم اللي لقاها', f.finderName); set('موبايل اللي لقاها', f.finderPhone ? "'" + f.finderPhone : ''); set('تبعيته', f.finderType);
-    if (f.supervisor) set('مشرف الأمن المستلم', f.supervisor);
-    if (f.toOffice && x.status === 'found') {
-      if (!f.supervisor && !x.supervisor) throw new Error('اكتب اسم مشرف الأمن اللي استلمها.');
-      set('وقت التسليم للأمن', stamp_(new Date()));
-      set('الحالة', STATUSES.office);
-      history_(code, 'found', 'office', u);
-    }
-    if (photo) {
-      set('صورة (Drive ID)', savePhoto_(photo, 'PHOTOS_FOLDER', 'مفقودات مراسي - صور المفقودات', code));
-      set('مصغّرة', thumbCell_(thumb));
-      trash_(x.photoId); trash_(x.thumbRef);
-    }
-    set('آخر تعديل', u.username + ' ' + stamp_(new Date()));
-    return getItem(token, code);
-  } finally { lock.releaseLock(); }
-}
-
-function setStatus(token, code, status, supervisor) {
-  const u = auth_(token, 'items.edit');
-  const lock = LockService.getScriptLock(); lock.waitLock(30000);
-  try {
-    const x = item_(code);
-    if (!x) throw new Error('المفقود ده مش موجود.');
-    if ((NEXT[x.status] || []).indexOf(status) < 0) throw new Error('مينفعش تنقل للحالة دي قبل ما تخلّص الخطوة اللي قبلها.');
-    const sh = itemsSheet_();
-    if (status === 'office') {
-      const sup = clean_(supervisor) || x.supervisor;
-      if (!sup) throw new Error('اكتب اسم مشرف الأمن اللي استلمها.');
-      sh.getRange(x.row, IC['مشرف الأمن المستلم'] + 1).setValue(sup);
-      sh.getRange(x.row, IC['وقت التسليم للأمن'] + 1).setValue(stamp_(new Date()));
-    }
-    sh.getRange(x.row, IC['الحالة'] + 1).setValue(STATUSES[status]);
-    history_(code, x.status, status, u);
-  } finally { lock.releaseLock(); }
-  return getItem(token, code);
-}
-
-function deleteItem(token, code) {
-  const u = auth_(token, 'items.delete');
-  const lock = LockService.getScriptLock(); lock.waitLock(30000);
-  try {
-    const x = item_(code);
-    if (!x) throw new Error('المفقود ده مش موجود.');
-    itemsSheet_().getRange(x.row, IC['محذوف'] + 1).setValue(u.username + ' ' + stamp_(new Date()));
-  } finally { lock.releaseLock(); }
-  return { ok: true };
-}
-
-function history_(code, from, to, u) {
-  historySheet_().appendRow([code, from ? STATUSES[from] : '', STATUSES[to], u.name + ' (' + u.username + ')', stamp_(new Date())]);
-}
-
-// ================================================================ handover (security only)
-
-function handovers_() {
-  return values_(handoversSheet_(), HO_HEADERS.length).map(function (r, i) {
-    return { row: i + 2, code: String(r[HC['الكود']]), name: String(r[HC['اسم صاحبها']]), unit: String(r[HC['رقم الوحدة']]),
-      type: String(r[HC['الصفة']]), phone: String(r[HC['الموبايل']]), note: String(r[HC['ملاحظات']]), by: String(r[HC['سلّمها']]),
-      at: String(r[HC['وقت التسليم']]), idPhotoId: String(r[HC['صورة البطاقة (Drive ID)']] || '') };
-  }).filter(function (h) { return h.code; }).reverse();
-}
-
-function handover(token, code, d, idPhoto) {
-  const u = auth_(token, 'claims.approve');
-  const name = clean_(d.name), unit = clean_(d.unit), phone = digits_(d.phone), note = clean_(d.note, 500);
-  const type = CLAIMANT_TYPES[d.type] ? d.type : '';
-  if (!name || !unit || !type || !phone) throw new Error('من فضلك أكمل بيانات صاحب الحاجة.');
-  if (!idPhoto) throw new Error('صوّر الـ ID أو الـ Application بتاع صاحبها.');
-  const lock = LockService.getScriptLock(); lock.waitLock(30000);
-  try {
-    const x = item_(code);
-    if (!x) throw new Error('المفقود ده مش موجود.');
-    if (x.status === 'delivered') throw new Error('المفقود ده اتسلّم لصاحبه قبل كده.');
-    if (x.status !== 'office' && x.status !== 'requested') throw new Error('لازم الحاجة تكون متسلّمة لمكتب الأمن الأول قبل ما تتسلّم لصاحبها.');
-    const idId = savePhoto_(idPhoto, 'IDS_FOLDER', 'مفقودات مراسي - صور البطايق (خاص)', 'id_' + code);
-    if (!idId) throw new Error('صورة البطاقة مش مظبوطة. صوّر تاني.');
-    const now = stamp_(new Date());
-    handoversSheet_().appendRow([code, name, unit, CLAIMANT_TYPES[type], "'" + phone, note, u.name + ' (' + u.username + ')', now, idId]);
-    itemsSheet_().getRange(x.row, IC['الحالة'] + 1).setValue(STATUSES.delivered);
-    history_(code, x.status, 'delivered', u);
-  } finally { lock.releaseLock(); }
-  return getItem(token, code);
-}
-
-function listHandovers(token) {
-  auth_(token, 'claims.view');
-  // آخر ٣٠٠ تسليم بس، والنوع من عمودين في شيت المفقودات
-  const sh = itemsSheet_(), n = sh.getLastRow() - 1, items = {};
-  if (n > 0) {
-    const codes = sh.getRange(2, 1, n, 2).getValues(), del = sh.getRange(2, IC['محذوف'] + 1, n, 1).getValues();
-    for (let i = 0; i < n; i++) if (codes[i][0] && !String(del[i][0] || '').trim()) items[codes[i][0]] = { category: String(codes[i][1]) };
-  }
-  const hs = handoversSheet_(), last = hs.getLastRow(), start = Math.max(2, last - 399);
-  const recent = last < 2 ? [] : hs.getRange(start, 1, last - start + 1, HO_HEADERS.length).getValues().map(function (r) {
-    return { code: String(r[HC['الكود']]), name: String(r[HC['اسم صاحبها']]), unit: String(r[HC['رقم الوحدة']]), type: String(r[HC['الصفة']]),
-      phone: String(r[HC['الموبايل']]), note: String(r[HC['ملاحظات']]), by: String(r[HC['سلّمها']]),
-      at: r[HC['وقت التسليم']] instanceof Date ? stamp_(r[HC['وقت التسليم']]) : String(r[HC['وقت التسليم']]), idPhotoId: String(r[HC['صورة البطاقة (Drive ID)']] || '') };
-  }).reverse();
-  return recent.filter(function (h) { return items[h.code]; }).slice(0, 300).map(function (h) {
-    return { code: h.code, category: items[h.code].category, name: h.name, unit: h.unit, type: h.type, phone: h.phone,
-      note: h.note, by: h.by, at: h.at, hasId: !!h.idPhotoId };
+/** إضافة أو تعديل حساب (الإدارة بس). o.oldUser = اسم المستخدم القديم لو بتعدّل. */
+function saveUser(t, o) {
+  const m = need_(t, ['admin']);
+  o = clean_(o);
+  const user = normUser_(o.user), oldUser = normUser_(o.oldUser || o.user);
+  if (!/^\S{3,30}$/.test(user)) throw new Error('اسم المستخدم من 3 لـ 30 حرف ومن غير مسافات.');
+  if (!ROLES[o.role]) throw new Error('اختار الدور.');
+  if (o.password) validPass_(o.password);
+  const active = o.active !== false;
+  return withLock_(function () {
+    const all = accounts_();
+    const old = o.isNew ? null : all.filter(function (x) { return x.user === oldUser; })[0];
+    if (!o.isNew && !old) throw new Error('الحساب مش موجود.');
+    if ((o.isNew || user !== oldUser) && all.some(function (x) { return x.user === user; })) throw new Error('اسم المستخدم ده موجود بالفعل.');
+    if (o.isNew && !o.password) throw new Error('اكتب كلمة سر للحساب.');
+    if (!o.name && !(old && old.name)) throw new Error('اكتب الاسم.');
+    const otherAdmins = all.filter(function (x) { return x.active && x.role === 'admin' && x.user !== oldUser; }).length;
+    if (old && old.active && old.role === 'admin' && (o.role !== 'admin' || !active) && !otherAdmins) throw new Error('لازم يفضل مدير واحد على الأقل.');
+    if (old && old.user === m.user && !active) throw new Error('ما ينفعش توقف حسابك وإنت داخل بيه.');
+    if (old && user !== oldUser) sheet_('accounts').getRange(rowOf_('accounts', oldUser, normUser_), 1).setValue(user);
+    putAccount_({ user: user, name: o.name || old.name, role: o.role, active: active, password: o.password || '' }, m.user);
+    return { renamedSelf: !!(old && old.user === m.user && user !== oldUser) };
   });
 }
 
-function getIdPhoto(token, code) {
-  auth_(token, 'claims.view');
-  const h = handoverOf_(code);
-  if (!h || !h.idPhotoId) return '';
-  return 'data:image/jpeg;base64,' + Utilities.base64Encode(DriveApp.getFileById(h.idPhotoId).getBlob().getBytes());
+/** مسح حساب نهائياً (الإدارة بس). العمليات القديمة بتفضل مسجّلة باسم المستخدم. */
+function deleteUser(t, user) {
+  const m = need_(t, ['admin']);
+  user = normUser_(user);
+  if (user === m.user) throw new Error('ما ينفعش تمسح حسابك وإنت داخل بيه.');
+  return withLock_(function () {
+    const all = accounts_();
+    const u = all.filter(function (x) { return x.user === user; })[0];
+    if (!u) throw new Error('الحساب مش موجود.');
+    if (u.active && u.role === 'admin' && !all.some(function (x) { return x.active && x.role === 'admin' && x.user !== user; })) throw new Error('لازم يفضل مدير واحد على الأقل.');
+    sheet_('accounts').deleteRow(rowOf_('accounts', user, normUser_));
+    return true;
+  });
 }
 
-// ================================================================ reports & charts
-
-function reportRows_(f) {
-  return items_().filter(function (x) { return matches_(x, f); });
+/* ===================== القوائم (الإعدادات) ===================== */
+// النوع والمكان لما يتغيّر اسمهم، الاسم الجديد بيتطبق على المفقودات والبلاغات القديمة كمان.
+const LISTS = {
+  cats:    { label: 'النوع',          rename: [['items', 'النوع'], ['reports', 'النوع']] },
+  locs:    { label: 'مكان العثور',     rename: [['items', 'مكان العثور'], ['reports', 'المكان المتوقع']] },
+  stores:  { label: 'مكان التخزين',    rename: [['items', 'مكان التخزين']] },
+  staff:   { label: 'الموظف',          rename: [] },
+  parties: { label: 'الجهة',           rename: [] }
+};
+function renameIn_(k, col, from, to) {
+  const sh = sheet_(k), last = sh.getLastRow();
+  if (last < 2) return 0;
+  const c = headers_(sh).indexOf(col);
+  if (c < 0) return 0;
+  const rg = sh.getRange(2, c + 1, last - 1, 1), v = rg.getValues();
+  let n = 0;
+  v.forEach(function (r) { if (String(r[0]).trim() === from) { r[0] = to; n++; } });
+  if (n) rg.setValues(v);
+  return n;
+}
+/** إضافة (oldName فاضي) أو تعديل عنصر في قايمة. للأنواع: o.days و o.valuable. */
+function listSave(t, kind, oldName, o) {
+  need_(t, ['admin']);
+  const L = LISTS[kind];
+  if (!L) throw new Error('قايمة مش معروفة.');
+  o = clean_(o);
+  const name = String(o.name || '').trim();
+  oldName = String(oldName || '').trim();
+  if (!name) throw new Error('اكتب ' + L.label + '.');
+  let row = [name];
+  if (kind === 'cats') {
+    const days = Math.round(Number(o.days));
+    if (!(days >= 1 && days <= 3650)) throw new Error('مدة الحفظ لازم تبقى رقم أيام (من 1 لـ 3650).');
+    row = [name, days, o.valuable ? 'نعم' : 'لا'];
+  }
+  return withLock_(function () {
+    const exists = rowOf_(kind, name);
+    if (exists > 0 && name !== oldName) throw new Error('«' + name + '» موجود بالفعل.');
+    if (!oldName) { sheet_(kind).appendRow(row); return { renamed: 0 }; }
+    const r = rowOf_(kind, oldName);
+    if (r < 0) throw new Error('«' + oldName + '» مش موجود.');
+    sheet_(kind).getRange(r, 1, 1, row.length).setValues([row]);
+    let n = 0;
+    if (name !== oldName) L.rename.forEach(function (x) { n += renameIn_(x[0], x[1], oldName, name); });
+    return { renamed: n };
+  });
+}
+function listDelete(t, kind, name) {
+  need_(t, ['admin']);
+  const L = LISTS[kind];
+  if (!L) throw new Error('قايمة مش معروفة.');
+  name = String(name || '').trim();
+  return withLock_(function () {
+    const r = rowOf_(kind, name);
+    if (r < 0) throw new Error('«' + name + '» مش موجود.');
+    if (['cats', 'locs', 'stores'].indexOf(kind) >= 0 && rows_(kind).length <= 1) throw new Error('لازم يفضل عنصر واحد على الأقل في القايمة.');
+    sheet_(kind).deleteRow(r);
+    return true;   // المفقودات القديمة بتفضل بالاسم المكتوب عليها
+  });
 }
 
-function getReport(token, f) {
-  const u = auth_(token, 'reports.view');
-  const rows = reportRows_(f);
-  const ho = {};
-  handovers_().forEach(function (h) { if (!ho[h.code]) ho[h.code] = h; });
-  return {
-    total: rows.length,
-    byStatus: Object.keys(STATUSES).map(function (k) { return { k: k, n: rows.filter(function (x) { return x.status === k; }).length }; }),
-    rows: rows.slice(0, 500).map(function (x) {
-      const h = ho[x.code];
-      return { code: x.code, category: x.category, place: x.place, date: x.date, time: x.time, status: x.status,
-        description: x.description, finderName: x.finderName, supervisor: x.supervisor, owner: h ? h.name + ' — ' + h.unit : '' };
-    }),
-    more: Math.max(0, rows.length - 500),
-    canExport: can_(u, 'reports.export')
+/** عرض صورة من فولدر الأبلكيشن لأي حد داخل بحساب. */
+function fileData(t, url) {
+  me_(t);
+  const mm = String(url || '').match(/\/d\/([\w-]+)/) || String(url || '').match(/[?&]id=([\w-]+)/);
+  if (!mm) throw new Error('الرابط ده مش صورة.');
+  const folderId = PropertiesService.getScriptProperties().getProperty('FILES_FOLDER_ID');
+  const f = DriveApp.getFileById(mm[1]);
+  let inFolder = false; const ps = f.getParents();
+  while (ps.hasNext()) if (ps.next().getId() === folderId) inFolder = true;
+  if (!inFolder) throw new Error('الملف ده مش من ملفات الأبلكيشن.');
+  const b = f.getBlob();
+  return 'data:' + b.getContentType() + ';base64,' + Utilities.base64Encode(b.getBytes());
+}
+
+/* ===================== أدوات الشيت ===================== */
+let SS_ = null;
+function ss_() {
+  if (SS_) return SS_;
+  if (SHEET_ID) return (SS_ = SpreadsheetApp.openById(SHEET_ID));
+  const active = SpreadsheetApp.getActive();
+  if (active) return (SS_ = active);
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('SHEET_ID');
+  if (id) { try { return (SS_ = SpreadsheetApp.openById(id)); } catch (e) {} }
+  SS_ = SpreadsheetApp.create('مخزن مفقودات مراسي - البيانات');
+  props.setProperty('SHEET_ID', SS_.getId());
+  return SS_;
+}
+function sheet_(k) { return ss_().getSheetByName(SHEETS[k].name); }
+function headers_(sh) { return sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String); }
+function rows_(k) {
+  const sh = sheet_(k);
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const h = headers_(sh);
+  return sh.getRange(2, 1, last - 1, h.length).getValues()
+    .filter(function (r) { return String(r[0]).trim() !== ''; })
+    .map(function (r) { const o = {}; h.forEach(function (name, i) { o[name] = r[i]; }); return o; });
+}
+function append_(k, obj) {
+  const sh = sheet_(k);
+  const h = headers_(sh);
+  sh.appendRow(h.map(function (name) { return obj[name] === undefined ? '' : obj[name]; }));
+}
+function update_(k, key, patch) {
+  const sh = sheet_(k);
+  const h = headers_(sh);
+  const last = sh.getLastRow();
+  if (last < 2) throw new Error('السجل مش موجود.');
+  const keys = sh.getRange(2, 1, last - 1, 1).getValues().map(function (r) { return String(r[0]); });
+  const i = keys.indexOf(String(key));
+  if (i < 0) throw new Error('السجل مش موجود: ' + key);
+  Object.keys(patch).forEach(function (name) {
+    const c = h.indexOf(name);
+    if (c >= 0) sh.getRange(i + 2, c + 1).setValue(patch[name]);
+  });
+}
+function list_(k, col) { return rows_(k).map(function (r) { return String(r[col] || ''); }).filter(String); }
+
+function pad_(n, l) { n = String(n); while (n.length < l) n = '0' + n; return n; }
+function nextId_(k, prefix, width) {
+  const re = new RegExp('^' + prefix + '(\\d+)$');
+  let max = 0;
+  rows_(k).forEach(function (r) { const m = String(r[SHEETS[k].headers[0]]).match(re); if (m) max = Math.max(max, Number(m[1])); });
+  return prefix + pad_(max + 1, width);
+}
+function withLock_(fn) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(20000);
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+function toDate_(s) {               // 'yyyy-mm-dd' (الساعة 12 الضهر علشان التوقيت الصيفي) أو 'yyyy-mm-ddThh:mm'
+  if (!s) return '';
+  if (s instanceof Date) return s;
+  const p = String(s).split(/[-T: ]/).map(Number);
+  const hasTime = String(s).length > 10;
+  const str = p[0] + '-' + pad_(p[1] || 1, 2) + '-' + pad_(p[2] || 1, 2) + ' ' + (hasTime ? pad_(p[3] || 0, 2) + ':' + pad_(p[4] || 0, 2) : '12:00');
+  return Utilities.parseDate(str, TZ, 'yyyy-MM-dd HH:mm');
+}
+function iso_(v, withTime) {
+  if (!(v instanceof Date) || isNaN(v)) return v === '' || v === null || v === undefined ? '' : String(v);
+  return Utilities.formatDate(v, TZ, withTime ? "yyyy-MM-dd'T'HH:mm" : 'yyyy-MM-dd');
+}
+function time_(v) { return v instanceof Date ? Utilities.formatDate(v, TZ, 'HH:mm') : String(v || ''); }
+function hours_(v) {                // 48 أو "048:00:00"
+  if (typeof v === 'number') return v;
+  const s = String(v || '');
+  if (s.indexOf(':') >= 0) { const p = s.split(':').map(Number); return (p[0] || 0) + (p[1] || 0) / 60; }
+  return Number(s) || 0;
+}
+function saveFile_(dataUrl, name) {  // صورة أو توقيع ← ملف في درايف برابط
+  if (!dataUrl) return '';
+  const m = String(dataUrl).match(/^data:(image\/[a-z]+);base64,(.+)$/);
+  if (!m) return '';
+  const folder = ensureFolder_();
+  const blob = Utilities.newBlob(Utilities.base64Decode(m[2]), m[1], name + (m[1] === 'image/png' ? '.png' : '.jpg'));
+  return folder.createFile(blob).getUrl();   // الملف بياخد صلاحيات الفولدر (خاص بالمستخدمين المسجلين بس)
+}
+function clean_(o) { const r = {}; Object.keys(o || {}).forEach(function (k) { r[k] = typeof o[k] === 'string' ? o[k].trim() : o[k]; }); return r; }
+
+/* ===================== حالة المفقود ===================== */
+function catMap_() {
+  const m = {};
+  rows_('cats').forEach(function (r) { m[String(r['النوع'])] = { days: Number(r['مدة الحفظ']) || 30, valuable: String(r['ثمين']) === 'نعم' }; });
+  return m;
+}
+function itemsWithStatus_() {
+  const cats = catMap_();
+  const delivered = {}; rows_('deliv').forEach(function (r) { delivered[String(r['رقم المفقود'])] = true; });
+  const disposed = {};  rows_('other').forEach(function (r) { disposed[String(r['رقم المفقود'])] = true; });
+  const today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  return rows_('items').map(function (r) {
+    const id = String(r['رقم المفقود']);
+    const c = cats[String(r['النوع'])] || { days: 30, valuable: false };
+    const found = r['تاريخ العثور'] instanceof Date ? r['تاريخ العثور'] : toDate_(r['تاريخ العثور']);
+    const due = found ? new Date(found.getTime() + c.days * 86400000) : '';
+    let status = 'في المخزن';
+    if (delivered[id]) status = 'تم التسليم';
+    else if (disposed[id]) status = 'سُلّم لجهة أخرى';
+    else if (r['تأكيد الإدارة'] === 'مرفوض') status = 'مرفوض';
+    else if (r['تأكيد الإدارة'] !== 'مؤكد') status = 'منتظر تأكيد الإدارة';
+    else if (due && iso_(due) < today) status = 'متأخر عن مدة الحفظ';
+    return {
+      id: id, found: iso_(found), time: time_(r['الوقت']), cat: String(r['النوع']), desc: String(r['الوصف']), brand: String(r['اللون والماركة']),
+      loc: String(r['مكان العثور']), locd: String(r['تفاصيل المكان']), sup: String(r['المشرف']), sector: String(r['القطاع']), finder: String(r['اللي لقاه']),
+      store: String(r['مكان التخزين']), photo: String(r['الصورة']), confirm: String(r['تأكيد الإدارة']), notes: String(r['ملاحظات']),
+      days: c.days, due: iso_(due), valuable: c.valuable, status: status
+    };
+  });
+}
+function permitsWithStatus_() {
+  const used = {};
+  rows_('deliv').forEach(function (r) { used[String(r['رقم الإذن'])] = true; });
+  rows_('other').forEach(function (r) { used[String(r['رقم الإذن'])] = true; });
+  const now = new Date();
+  return rows_('permits').map(function (r) {
+    const id = String(r['رقم الإذن']);
+    const dec = String(r['قرار الإدارة'] || 'منتظر');
+    const at = r['تاريخ ووقت القرار'] instanceof Date ? r['تاريخ ووقت القرار'] : (r['تاريخ ووقت القرار'] ? toDate_(r['تاريخ ووقت القرار']) : '');
+    const h = hours_(r['الصلاحية']) || 48;
+    const until = at ? new Date(at.getTime() + h * 3600e3) : '';
+    let status = 'منتظر موافقة الإدارة';
+    if (dec === 'مرفوض') status = 'مرفوض';
+    else if (dec === 'موافق') status = used[id] ? 'اتستخدم' : (until && now > until ? 'منتهي' : 'ساري');
+    return {
+      id: id, item: String(r['رقم المفقود']), purpose: String(r['الغرض']), who: String(r['المستلم أو الجهة']), phone: String(r['الموبايل']),
+      res: String(r['صفة المستلم']), unit: String(r['الوحدة']), asked: iso_(r['تاريخ الطلب']), decision: dec, decidedAt: iso_(at, true),
+      hours: h, until: iso_(until, true), note: String(r['ملاحظة الإدارة']), status: status
+    };
+  });
+}
+
+/* ===================== تحميل الأبلكيشن ===================== */
+function boot(t) {
+  const m = need_(t, ['admin', 'keeper', 'supervisor', 'cr']);
+  const lists = {
+    cats: rows_('cats').map(function (r) { return { name: String(r['النوع']), days: Number(r['مدة الحفظ']) || 30, valuable: String(r['ثمين']) === 'نعم' }; }),
+    locs: list_('locs', 'المكان'), stores: list_('stores', 'المكان'), staff: list_('staff', 'الاسم'), parties: list_('parties', 'الجهة'),
+    prios: rows_('prios').map(function (r) { return { name: String(r['الأولوية']), hours: hours_(r['المهلة']) || 24 }; })
   };
+  const crRows = rows_('cr').map(function (r) {
+    return { id: String(r['رقم البلاغ']), sent: iso_(r['تاريخ ووقت الإرسال'], true), prio: String(r['الأولوية']), req: String(r['المطلوب']),
+      places: String(r['الأماكن والكاميرات']), window: String(r['فترة المراجعة']), route: String(r['خط سير صاحب البلاغ']), look: String(r['أوصاف صاحب البلاغ']),
+      result: String(r['نتيجة المراجعة']), cams: String(r['الكاميرات اللي اتراجعت']), text: String(r['الإفادة']), photos: String(r['الصور']),
+      replied: iso_(r['تاريخ ووقت الرد'], true), summary: String(r['ملخص البلاغ']) };
+  });
+  const out = { me: m, lists: lists, cr: crRows, now: iso_(new Date(), true), today: iso_(new Date()) };
+  if (m.role === 'admin') out.users = accounts_().filter(function (u) { return u.role; }).map(function (u) { return { user: u.user, name: u.name, role: u.role, active: u.active, by: u.by, at: u.at }; });
+  if (m.role === 'cr') return out;                       // الكنترول روم: بلاغاتهم بس
+  out.items = itemsWithStatus_();
+  if (m.role === 'supervisor') { out.items = out.items.map(function (i) { return { id: i.id, found: i.found, cat: i.cat, desc: i.desc, loc: i.loc, store: i.store, status: i.status }; }); return out; }
+  out.permits = permitsWithStatus_();
+  out.deliveries = rows_('deliv').map(function (r) {
+    return { id: String(r['رقم التسليم']), item: String(r['رقم المفقود']), permit: String(r['رقم الإذن']), at: iso_(r['تاريخ ووقت التسليم'], true),
+      name: String(r['اسم المستلم']), rel: String(r['علاقته بالمفقود']), res: String(r['صفته في مراسي']), unit: String(r['الوحدة']),
+      idType: String(r['نوع الهوية']), idNo: String(r['رقم الهوية']), phone: String(r['الموبايل']), blind: String(r['وصفه قبل العرض']),
+      match: String(r['نتيجة المطابقة']), proofs: String(r['إثبات الملكية']), releasedBy: String(r['خرّجه من المخزن']), witness: String(r['الشاهد']),
+      cond: String(r['حالة المفقود']), idPhoto: String(r['صورة الهوية']), appPhoto: String(r['صورة الأبلكيشن أو QR']), sig: String(r['توقيع المستلم']), notes: String(r['ملاحظات']) };
+  });
+  out.others = rows_('other').map(function (r) {
+    return { id: String(r['رقم العملية']), item: String(r['رقم المفقود']), permit: String(r['رقم الإذن']), date: iso_(r['التاريخ']), party: String(r['الجهة']),
+      ref: String(r['رقم المحضر']), to: String(r['جهة الاستلام']), releasedBy: String(r['خرّجه من المخزن']), notes: String(r['ملاحظات']) };
+  });
+  out.reports = rows_('reports').map(function (r) {
+    return { id: String(r['رقم البلاغ']), date: iso_(r['تاريخ البلاغ']), name: String(r['الاسم']), phone: String(r['الموبايل']), res: String(r['صفته في مراسي']),
+      unit: String(r['الوحدة']), cat: String(r['النوع']), desc: String(r['الوصف']), brand: String(r['اللون والماركة']), from: iso_(r['ضاعت من']), to: iso_(r['لحد']),
+      loc: String(r['المكان المتوقع']), locd: String(r['تفاصيل المكان']), item: String(r['رقم المفقود المطابق']), status: String(r['حالة البلاغ'] || 'مفتوح'), notes: String(r['متابعات']) };
+  });
+  return out;
 }
 
-/** كل الصفوف للتصدير (CSV). */
-function exportRows(token, f) {
-  auth_(token, 'reports.export');
-  const ho = {};
-  handovers_().forEach(function (h) { if (!ho[h.code]) ho[h.code] = h; });
-  const head = ['الكود', 'النوع', 'الوصف', 'المكان', 'تاريخ العثور', 'وقت العثور', 'الحالة', 'اسم اللي لقاها', 'موبايل اللي لقاها', 'تبعيته',
-    'مشرف الأمن المستلم', 'وقت التسليم للأمن', 'سجّلها', 'اسم صاحبها', 'رقم الوحدة', 'الصفة', 'موبايل صاحبها', 'سلّمها', 'وقت التسليم'];
-  return [head].concat(reportRows_(f).map(function (x) {
-    const h = ho[x.code] || {};
-    return [x.code, x.category, x.description, x.place, x.date, x.time, STATUSES[x.status], x.finderName, x.finderPhone, x.finderType,
-      x.supervisor, x.officeAt, x.by, h.name || '', h.unit || '', h.type || '', h.phone || '', h.by || '', h.at || ''];
-  }));
+/* ===================== العمليات ===================== */
+function saveItem(t, o) {
+  const m = need_(t, ['admin', 'keeper', 'supervisor']);
+  o = clean_(o);
+  if (!o.desc || !o.cat || !o.found) throw new Error('اكتب النوع والوصف وتاريخ العثور.');
+  return withLock_(function () {
+    const y = String(o.found).slice(0, 4);
+    const id = nextId_('items', 'LF-' + y + '-', 5);
+    append_('items', {
+      'رقم المفقود': id, 'تاريخ العثور': toDate_(o.found), 'الوقت': o.time ? "'" + o.time : '', 'النوع': o.cat, 'الوصف': o.desc, 'اللون والماركة': o.brand || '',
+      'مكان العثور': o.loc || '', 'تفاصيل المكان': o.locd || '', 'المشرف': o.sup || '', 'القطاع': o.sector || '', 'اللي لقاه': o.finder || '',
+      'مكان التخزين': m.role === 'supervisor' ? '' : (o.store || ''), 'الصورة': saveFile_(o.photo, id),
+      'تأكيد الإدارة': m.role === 'admin' ? 'مؤكد' : 'منتظر', 'ملاحظات': o.notes || '', 'سجّله': m.user, 'أكّده': m.role === 'admin' ? m.user : ''
+    });
+    return { id: id, confirmed: m.role === 'admin' };
+  });
+}
+function confirmItem(t, id, decision, store) {
+  const m = need_(t, ['admin']);
+  const patch = { 'تأكيد الإدارة': decision === 'مرفوض' ? 'مرفوض' : 'مؤكد', 'أكّده': m.user };
+  if (store) patch['مكان التخزين'] = store;
+  update_('items', id, patch);
+  return true;
+}
+function moveItem(t, id, store) { need_(t, ['admin', 'keeper']); update_('items', id, { 'مكان التخزين': store }); return true; }
+
+function requestPermit(t, o) {
+  const m = need_(t, ['admin', 'keeper']);
+  o = clean_(o);
+  if (['تسليم لصاحبه', 'تسليم لجهة أخرى'].indexOf(o.purpose) < 0) throw new Error('اختار غرض الإذن.');
+  if (o.purpose === 'تسليم لصاحبه' && (!o.who || !o.phone)) throw new Error('اكتب اسم المستلم والموبايل.');
+  return withLock_(function () {
+    const item = itemsWithStatus_().filter(function (i) { return i.id === o.item; })[0];
+    if (!item) throw new Error('رقم المفقود مش موجود.');
+    if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
+    const open = permitsWithStatus_().filter(function (p) { return p.item === o.item && (p.status === 'منتظر موافقة الإدارة' || p.status === 'ساري'); })[0];
+    if (open) throw new Error('فيه إذن ' + open.status + ' للمفقود ده بالفعل: ' + open.id);
+    const y = Utilities.formatDate(new Date(), TZ, 'yyyy');
+    const id = nextId_('permits', 'EX-' + y + '-', 5);
+    const isAdmin = m.role === 'admin';
+    append_('permits', {
+      'رقم الإذن': id, 'رقم المفقود': o.item, 'الغرض': o.purpose, 'المستلم أو الجهة': o.who || '', 'الموبايل': o.phone || '', 'صفة المستلم': o.res || '',
+      'الوحدة': o.unit || '', 'تاريخ الطلب': new Date(), 'قرار الإدارة': isAdmin ? 'موافق' : 'منتظر', 'تاريخ ووقت القرار': isAdmin ? new Date() : '',
+      'الصلاحية': Number(o.hours) || 48, 'ملاحظة الإدارة': o.note || '', 'طلبه': m.user
+    });
+    return { id: id, approved: isAdmin };
+  });
+}
+function decidePermit(t, id, decision, hours, note) {
+  need_(t, ['admin']);
+  if (decision === 'مرفوض' && !String(note || '').trim()) throw new Error('اكتب سبب الرفض.');
+  update_('permits', id, { 'قرار الإدارة': decision === 'مرفوض' ? 'مرفوض' : 'موافق', 'تاريخ ووقت القرار': new Date(), 'الصلاحية': Number(hours) || 48, 'ملاحظة الإدارة': note || '' });
+  return true;
+}
+function checkRelease_(itemId, permitId, purpose, role) {
+  const item = itemsWithStatus_().filter(function (i) { return i.id === itemId; })[0];
+  if (!item) throw new Error('رقم المفقود مش موجود.');
+  if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
+  if (!permitId && role === 'admin') return 'إذن مباشر من الإدارة';
+  const p = permitsWithStatus_().filter(function (x) { return x.id === permitId; })[0];
+  if (!p) throw new Error('لازم إذن خروج ساري قبل التسليم.');
+  if (p.item !== itemId) throw new Error('الإذن ده لمفقود تاني.');
+  if (p.purpose !== purpose) throw new Error('الإذن ده لغرض «' + p.purpose + '».');
+  if (p.status !== 'ساري') throw new Error('الإذن حالته «' + p.status + '».');
+  return p.id;
+}
+function deliver(t, o) {
+  const m = need_(t, ['admin', 'keeper']);
+  o = clean_(o);
+  const req = [['name', 'اسم المستلم'], ['idNo', 'رقم الهوية'], ['phone', 'الموبايل'], ['blind', 'وصفه قبل العرض'], ['match', 'نتيجة المطابقة'], ['releasedBy', 'اللي خرّج المفقود']];
+  req.forEach(function (x) { if (!o[x[0]]) throw new Error('اكتب ' + x[1] + '.'); });
+  if (o.match === 'غير مطابق') throw new Error('الوصف غير مطابق: ما يتمّش التسليم.');
+  if (['مطابق تماماً', 'مطابق جزئياً'].indexOf(o.match) < 0) throw new Error('اختار نتيجة المطابقة.');
+  const proofs = String(o.proofs || '').split('،').map(function (s) { return s.trim(); }).filter(String);
+  if (!proofs.length) throw new Error('اختار طريقة إثبات ملكية واحدة على الأقل.');
+  if (!o.sig) throw new Error('توقيع المستلم مطلوب.');
+  return withLock_(function () {
+    const item = itemsWithStatus_().filter(function (i) { return i.id === o.item; })[0];
+    if (!item) throw new Error('رقم المفقود مش موجود.');
+    const need = (item.valuable || o.match === 'مطابق جزئياً') ? 2 : 1;
+    if (proofs.length < need) throw new Error('مطلوب ' + (need === 2 ? 'طريقتين إثبات' : 'طريقة إثبات') + ' على الأقل.');
+    if (item.valuable && !o.witness) throw new Error('مفقود ثمين: اكتب اسم الشاهد.');
+    if (item.valuable && !o.idPhoto) throw new Error('مفقود ثمين: صورة الهوية مطلوبة.');
+    const permit = checkRelease_(o.item, o.permit, 'تسليم لصاحبه', m.role);
+    const id = 'DL-' + Utilities.formatDate(new Date(), TZ, 'yyMMddHHmmss') + Math.floor(Math.random() * 90 + 10);
+    append_('deliv', {
+      'رقم التسليم': id, 'رقم المفقود': o.item, 'رقم الإذن': permit, 'تاريخ ووقت التسليم': new Date(), 'اسم المستلم': o.name, 'علاقته بالمفقود': o.rel || '',
+      'صفته في مراسي': o.res || '', 'الوحدة': o.unit || '', 'نوع الهوية': o.idType || '', 'رقم الهوية': o.idNo, 'الموبايل': o.phone, 'وصفه قبل العرض': o.blind,
+      'نتيجة المطابقة': o.match, 'إثبات الملكية': o.proofs, 'خرّجه من المخزن': o.releasedBy, 'الشاهد': o.witness || '', 'حالة المفقود': o.cond || '',
+      'صورة الهوية': saveFile_(o.idPhoto, id + '-هوية'), 'صورة الأبلكيشن أو QR': saveFile_(o.appPhoto, id + '-أبلكيشن'), 'توقيع المستلم': saveFile_(o.sig, id + '-توقيع'),
+      'ملاحظات': o.notes || '', 'سجّله': m.user
+    });
+    return { id: id };
+  });
+}
+function dispose(t, o) {
+  const m = need_(t, ['admin', 'keeper']);
+  o = clean_(o);
+  if (!o.party || !o.releasedBy) throw new Error('اختار الجهة واسم اللي خرّج المفقود.');
+  return withLock_(function () {
+    const permit = checkRelease_(o.item, o.permit, 'تسليم لجهة أخرى', m.role);
+    const id = 'OT-' + Utilities.formatDate(new Date(), TZ, 'yyMMddHHmmss') + Math.floor(Math.random() * 90 + 10);
+    append_('other', { 'رقم العملية': id, 'رقم المفقود': o.item, 'رقم الإذن': permit, 'التاريخ': new Date(), 'الجهة': o.party, 'رقم المحضر': o.ref || '',
+      'جهة الاستلام': o.to || '', 'خرّجه من المخزن': o.releasedBy, 'ملاحظات': o.notes || '', 'سجّله': m.user });
+    return { id: id };
+  });
 }
 
-function getCharts(token, f) {
-  auth_(token, 'charts.view');
-  f = f || {};
-  const today = dayKey_(new Date());
-  const to = /^\d{4}-\d{2}-\d{2}$/.test(f.to || '') ? f.to : today;
-  let from = /^\d{4}-\d{2}-\d{2}$/.test(f.from || '') ? f.from : shiftDay_(to, -29);
-  if (shiftDay_(from, 366) < to) from = shiftDay_(to, -366);
-  const rows = reportRows_({ from: from, to: to, category: f.category, place: f.place });
-  const count = function (key) { const m = {}; rows.forEach(function (x) { const k = x[key] || 'غير محدد'; m[k] = (m[k] || 0) + 1; }); return top_(m, 12); };
-  const days = [], byDay = {};
-  for (let d = from; d <= to; d = shiftDay_(d, 1)) { days.push(d); byDay[d] = 0; }
-  rows.forEach(function (x) { if (byDay[x.date] !== undefined) byDay[x.date]++; });
-  const delivered = rows.filter(function (x) { return x.status === 'delivered'; }).length;
-  return {
-    from: from, to: to, total: rows.length, delivered: delivered,
-    open: rows.filter(function (x) { return x.status !== 'delivered'; }).length,
-    rate: rows.length ? Math.round(delivered / rows.length * 100) : 0,
-    byDay: days.map(function (d) { return { k: d, n: byDay[d] }; }),
-    byCategory: count('category'), byPlace: count('place'),
-    byStatus: Object.keys(STATUSES).map(function (k) { return { k: STATUSES[k], n: rows.filter(function (x) { return x.status === k; }).length }; })
-  };
+function saveReport(t, o) {
+  const m = need_(t, ['admin', 'keeper']);
+  o = clean_(o);
+  if (!o.name || !o.phone || !o.desc || !o.cat) throw new Error('اكتب الاسم والموبايل والنوع والوصف.');
+  if (o.id) {
+    update_('reports', o.id, { 'الاسم': o.name, 'الموبايل': o.phone, 'صفته في مراسي': o.res || '', 'الوحدة': o.unit || '', 'النوع': o.cat, 'الوصف': o.desc,
+      'اللون والماركة': o.brand || '', 'ضاعت من': toDate_(o.from), 'لحد': toDate_(o.to || o.from), 'المكان المتوقع': o.loc || '', 'تفاصيل المكان': o.locd || '' });
+    return { id: o.id };
+  }
+  return withLock_(function () {
+    const id = nextId_('reports', 'BL-', 4);
+    append_('reports', { 'رقم البلاغ': id, 'تاريخ البلاغ': new Date(), 'الاسم': o.name, 'الموبايل': o.phone, 'صفته في مراسي': o.res || '', 'الوحدة': o.unit || '',
+      'النوع': o.cat, 'الوصف': o.desc, 'اللون والماركة': o.brand || '', 'ضاعت من': toDate_(o.from), 'لحد': toDate_(o.to || o.from), 'المكان المتوقع': o.loc || '',
+      'تفاصيل المكان': o.locd || '', 'رقم المفقود المطابق': '', 'حالة البلاغ': 'مفتوح', 'متابعات': '', 'سجّله': m.user });
+    return { id: id };
+  });
+}
+function reportAction(t, id, action, value) {
+  need_(t, ['admin', 'keeper']);
+  const r = rows_('reports').filter(function (x) { return String(x['رقم البلاغ']) === id; })[0];
+  if (!r) throw new Error('البلاغ مش موجود.');
+  const stamp = Utilities.formatDate(new Date(), TZ, 'dd/MM HH:mm');
+  if (action === 'link') {
+    const it = itemsWithStatus_().filter(function (i) { return i.id === String(value); })[0];
+    if (!it) throw new Error('رقم المفقود مش موجود: ' + value);
+    if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(it.status) < 0) throw new Error('المفقود ده مش في المخزن (' + it.status + ').');
+  }
+  if (action === 'link') update_('reports', id, { 'رقم المفقود المطابق': value, 'حالة البلاغ': 'اتطابق' });
+  else if (action === 'unlink') update_('reports', id, { 'رقم المفقود المطابق': '', 'حالة البلاغ': 'مفتوح' });
+  else if (action === 'close') update_('reports', id, { 'حالة البلاغ': 'مقفول', 'متابعات': (r['متابعات'] ? r['متابعات'] + '\n' : '') + stamp + ' قفل: ' + value });
+  else if (action === 'note') update_('reports', id, { 'متابعات': (r['متابعات'] ? r['متابعات'] + '\n' : '') + stamp + ' ' + value });
+  return true;
 }
 
-function top_(m, n) {
-  return Object.keys(m).map(function (k) { return { k: k, n: m[k] }; }).sort(function (a, b) { return b.n - a.n; }).slice(0, n);
+function sendToCR(t, o) {
+  need_(t, ['admin']);
+  o = clean_(o);
+  if (!o.req) throw new Error('اكتب المطلوب من الكنترول روم.');
+  if (rows_('cr').some(function (r) { return String(r['رقم البلاغ']) === o.id; })) throw new Error('البلاغ ده اتبعت للكنترول روم قبل كده.');
+  const r = rows_('reports').filter(function (x) { return String(x['رقم البلاغ']) === o.id; })[0];
+  if (!r) throw new Error('البلاغ مش موجود.');
+  const summary = [r['النوع'], r['الوصف'], r['اللون والماركة'], 'ضاعت ' + iso_(r['ضاعت من']) + (r['لحد'] ? ' لحد ' + iso_(r['لحد']) : ''),
+    'المكان: ' + (r['المكان المتوقع'] || 'غير معروف') + (r['تفاصيل المكان'] ? ' - ' + r['تفاصيل المكان'] : ''),
+    'صاحب البلاغ: ' + r['الاسم'] + ' (' + (r['صفته في مراسي'] || '') + (r['الوحدة'] ? ' ' + r['الوحدة'] : '') + ')'].filter(String).join(' · ');
+  append_('cr', { 'رقم البلاغ': o.id, 'تاريخ ووقت الإرسال': new Date(), 'الأولوية': o.prio || 'عادي', 'المطلوب': o.req, 'الأماكن والكاميرات': o.places || '',
+    'فترة المراجعة': o.window || '', 'خط سير صاحب البلاغ': o.route || '', 'أوصاف صاحب البلاغ': o.look || '', 'ملخص البلاغ': summary });
+  return true;
 }
-
-// ================================================================ helpers
-
-function latinDigits_(s) {
-  return String(s || '').replace(/[٠-٩]/g, function (d) { return '٠١٢٣٤٥٦٧٨٩'.indexOf(d); }).replace(/[۰-۹]/g, function (d) { return '۰۱۲۳۴۵۶۷۸۹'.indexOf(d); });
-}
-function digits_(s) { return latinDigits_(s).replace(/\D/g, ''); }
-function clean_(s, max) { return String(s == null ? '' : s).replace(/^[=+\-@]+/, '').trim().slice(0, max || 300); }
-function pad_(n) { return (n < 10 ? '0' : '') + n; }
-function dayKey_(d) { return Utilities.formatDate(d, TZ, 'yyyy-MM-dd'); }
-function stamp_(d) { return Utilities.formatDate(d, TZ, 'yyyy-MM-dd HH:mm'); }
-function shiftDay_(key, n) {
-  const p = key.split('-').map(Number);
-  const d = new Date(Date.UTC(p[0], p[1] - 1, p[2] + n));
-  return d.getUTCFullYear() + '-' + pad_(d.getUTCMonth() + 1) + '-' + pad_(d.getUTCDate());
+function crReply(t, o) {
+  const m = need_(t, ['admin', 'cr']);
+  o = clean_(o);
+  if (!o.result) throw new Error('اختار نتيجة المراجعة.');
+  const photos = (o.photos || []).slice(0, 4).map(function (p, i) { return saveFile_(p, o.id + '-كنترول-' + (i + 1)); }).filter(String).join('\n');
+  const patch = { 'نتيجة المراجعة': o.result, 'الكاميرات اللي اتراجعت': o.cams || '', 'الإفادة': o.text || '', 'تاريخ ووقت الرد': new Date(), 'رد بواسطة': m.user };
+  if (photos) patch['الصور'] = photos;
+  update_('cr', o.id, patch);
+  return true;
 }
