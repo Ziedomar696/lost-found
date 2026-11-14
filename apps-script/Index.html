@@ -355,10 +355,55 @@ function uDel(i){var u=_U[i];confirmM("مسح حساب «"+esc(u.name||u.user)+"
 var LISTS_UI=[["cats","أنواع المفقودات","النوع"],["locs","أماكن العثور","المكان"],["stores","أماكن التخزين","المكان"],["staff","الموظفين (اللي بيخرّجوا من المخزن)","الاسم"],["parties","الجهات (تسليم لجهة أخرى)","الجهة"]];
 function listItems(k){return k==="cats"?D.lists.cats:D.lists[k].map(function(n){return {name:n}})}
 function rLists(){
-  $("#app").innerHTML=LISTS_UI.map(function(L){var k=L[0],arr=listItems(k);
+  $("#app").innerHTML=impCard()+LISTS_UI.map(function(L){var k=L[0],arr=listItems(k);
     return '<div class="card"><div class="btns" style="justify-content:space-between"><h2 style="margin:0">'+L[1]+' ('+arr.length+')</h2><button class="btn p" onclick="lEdit(\''+k+'\',-1)">+ إضافة</button></div>'+
      (arr.map(function(x,i){return '<div class="row" style="cursor:default"><div class="m"><div class="d">'+esc(x.name)+(x.valuable?' <span class="pill w">ثمين</span>':'')+'</div>'+(k==="cats"?'<div class="s">مدة الحفظ '+x.days+' يوم</div>':'')+'</div><button class="btn" onclick="lEdit(\''+k+'\','+i+')">تعديل</button><button class="btn d" onclick="lDel(\''+k+'\','+i+')">مسح</button></div>'}).join("")||'<p class="sub">فاضية.</p>')+'</div>'}).join("");
 }
+/* ---------- استيراد من Excel ---------- */
+var IMP=null;
+function impCard(){return '<div class="card"><h2>استيراد مفقودات من ملف Excel</h2><p class="sub">ملف شيت المفقودات القديم (Auto Code، Found By، Date Found، Status…). المفقود اللي رقمه موجود بيتساب، فتقدر ترفع نفس الملف أو أجزاء جديدة منه أكتر من مرة.</p><input type="file" id="imp_f" accept=".xlsx,.xlsm,.xls,.csv" onchange="impRead(this)"><div id="imp_o" style="margin-top:10px"></div></div>'}
+function loadXLSX(cb){if(window.XLSX)return cb();var s=document.createElement("script");s.src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";s.onload=cb;s.onerror=function(){toast("مش قادر يحمّل قارئ الإكسيل، اتأكد من النت")};document.head.appendChild(s)}
+function impRead(inp){var f=inp.files&&inp.files[0];if(!f)return;$("#imp_o").innerHTML='<p class="sub">جاري قراءة الملف…</p>';
+  loadXLSX(function(){var r=new FileReader();r.onload=function(){try{var wb=XLSX.read(new Uint8Array(r.result),{type:"array",cellDates:true});var all=[];
+    wb.SheetNames.forEach(function(n){all=all.concat(parseLegacy(XLSX.utils.sheet_to_json(wb.Sheets[n],{header:1,raw:true,defval:null})))});impPreview(all)}catch(e){$("#imp_o").innerHTML='<div class="note e">الملف ده مش مقروء: '+esc(e.message)+'</div>'}};r.readAsArrayBuffer(f)})}
+function ymd(y,m,d){return y+"-"+("0"+m).slice(-2)+"-"+("0"+d).slice(-2)}
+/* التاريخ في الشيت مكتوب يوم-شهر-سنة. الخانات اللي الإكسيل حوّلها لتاريخ بيكون قالب اليوم والشهر، فبنصلّحها،
+   ولو مسار الصورة فيه فولدر الشهر\اليوم بنعتمد عليه. */
+function legacyDate(v,path){var y=null,m=null,d=null;
+  if(v instanceof Date){var t=new Date(v.getTime()+12*3600e3);y=t.getFullYear();m=t.getDate();d=t.getMonth()+1}
+  else if(v!=null&&String(v).trim()){var s=String(v).trim(),p=s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})/),q=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if(p){d=+p[1];m=+p[2];y=+p[3]}else if(q){y=+q[1];m=+q[2];d=+q[3]}}
+  var f=String(path||"").match(/[\\\/](\d{2})[\\\/](\d{2})[\\\/]/);
+  if(f&&+f[1]>=1&&+f[1]<=12&&+f[2]>=1&&+f[2]<=31){m=+f[1];d=+f[2]}
+  if(!y||!m||!d||m>12||d>31)return "";return ymd(y,m,d)}
+function parseLegacy(A){var hi=-1,H=null;
+  for(var i=0;i<Math.min(A.length,30);i++){var r=(A[i]||[]).map(function(x){return String(x==null?"":x).trim().toLowerCase()});if(r.indexOf("auto code")>=0){hi=i;H=r;break}}
+  if(hi<0)return [];
+  var c=function(){for(var k=0;k<arguments.length;k++){var j=H.indexOf(arguments[k]);if(j>=0)return j}return -1};
+  var C={code:c("auto code"),by:c("found by"),date:c("date found"),st:c("status"),cat:c("category"),photo:c("photo url"),desc:c("description"),loc:c("village loc.","village loc"),qty:c("unit/store"),dd:c("delivere date","delivered date"),rb:c("received by")};
+  var g=function(r,k){return C[k]<0?null:r[C[k]]},sv=function(v){return v==null?"":String(v).trim()};
+  return A.slice(hi+1).filter(function(r){return r&&sv(g(r,"code"))}).map(function(r){
+    var photo=sv(g(r,"photo")),rb=sv(g(r,"rb")),st=sv(g(r,"st")).toLowerCase(),parts=rb.split(/\s+-\s+/);
+    var short=photo.replace(/^.*?[\\\/](photo[\\\/])/i,"$1");
+    var dd=g(r,"dd");
+    return {code:sv(g(r,"code")).replace(/\.0$/,""),by:sv(g(r,"by")),found:legacyDate(g(r,"date"),photo),rawDate:g(r,"date"),cat:sv(g(r,"cat")),desc:sv(g(r,"desc")),loc:sv(g(r,"loc")),
+      qty:sv(g(r,"qty")),photoPath:short,delivered:st==="delivered"||!!rb,delivDate:dd==null||dd===""?"":legacyDate(dd,""),recRaw:rb,recUnit:parts.length>1?parts[0]:"",recName:parts.length>1?parts.slice(1).join(" - "):rb}})}
+function impPreview(rows){IMP=rows;var o=$("#imp_o");
+  if(!rows.length){o.innerHTML='<div class="note e">مش لاقي صف عناوين فيه «Auto Code» في الملف.</div>';return}
+  var have={};D.items.forEach(function(i){have[i.id]=1});
+  var nw=rows.filter(function(r){return !have[r.code]}),bad=nw.filter(function(r){return !r.found}),dl=nw.filter(function(r){return r.delivered});
+  o.innerHTML='<div class="note i">في الملف '+rows.length+' مفقود: <b>'+nw.length+' جديد</b>'+(rows.length-nw.length?' و'+(rows.length-nw.length)+' موجود قبل كده (هيتساب)':'')+'، منهم '+dl.length+' متسلّم.'+(bad.length?' <b>'+bad.length+' من غير تاريخ مقروء</b> (هيتسجّلوا من غير تاريخ عثور).':'')+'</div>'+
+   '<div style="overflow-x:auto;margin-top:8px"><table><tr><th>الرقم</th><th>التاريخ</th><th>النوع</th><th>الوصف</th><th>المكان</th><th>لقاه</th><th>الحالة</th></tr>'+
+   nw.slice(0,15).map(function(r){return '<tr><td>'+esc(r.code)+'</td><td>'+(r.found?fd(r.found):'<b style="color:var(--crit)">؟</b>')+'</td><td>'+esc(r.cat)+'</td><td>'+esc(r.desc)+'</td><td>'+esc(r.loc)+'</td><td>'+esc(r.by)+'</td><td>'+(r.delivered?'متسلّم'+(r.recName?' · '+esc(r.recName):''):'في المخزن')+'</td></tr>'}).join("")+'</table></div>'+
+   (nw.length>15?'<p class="sub">وكمان '+(nw.length-15)+'…</p>':'')+
+   '<p class="sub">الصور اللي في الشيت متخزنة على جهاز المكتب، فمش هتتنقل. مسار كل صورة هيتكتب في ملاحظات المفقود. الأنواع والأماكن الجديدة هتتضاف للقوائم، وتقدر تغيّر أسماءها بالعربي بعد كده من هنا.</p>'+
+   (nw.length?'<div class="btns"><button class="btn p" id="imp_go">استيراد '+nw.length+' مفقود</button><span class="sub" id="imp_msg"></span></div>':'');
+  if(nw.length)$("#imp_go").onclick=function(){impSend(nw,this)}}
+function impSend(rows,b){var i=0,tot={items:0,deliv:0,skipped:0,cats:0,locs:0};b.disabled=true;
+  var next=function(){if(i>=rows.length){toast("اتنقل "+tot.items+" مفقود و"+tot.deliv+" تسليم");reload(function(){$("#imp_o").innerHTML='<div class="note i">اتنقل '+tot.items+' مفقود، منهم '+tot.deliv+' متسلّم'+(tot.cats||tot.locs?'، واتضاف '+tot.cats+' نوع و'+tot.locs+' مكان للقوائم':'')+(tot.skipped?'. اتساب '+tot.skipped+' موجود قبل كده':'')+'.</div>'});return}
+    $("#imp_msg").textContent="جاري النقل… "+i+" من "+rows.length;
+    call("importLegacy",[rows.slice(i,i+300)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=300;next()},b)};
+  next()}
 function lEdit(k,i){var L=LISTS_UI.filter(function(x){return x[0]===k})[0],x=i>=0?listItems(k)[i]:{name:"",days:30,valuable:false};
   modal('<h3 style="margin:0">'+(i>=0?"تعديل":"إضافة")+' · '+L[1]+'</h3><div class="f">'+fld(L[2],'<input id="le_name" value="'+esc(x.name)+'">')+
    (k==="cats"?fld("مدة الحفظ (يوم)",'<input id="le_days" type="number" min="1" value="'+x.days+'">')+'<div class="fld"><label>&nbsp;</label><label style="font-weight:500;display:flex;gap:6px;align-items:center"><input type="checkbox" id="le_val" style="width:auto"'+(x.valuable?" checked":"")+'> ثمين (خزنة، وطريقتين إثبات، وشاهد وصورة هوية عند التسليم)</label></div>':"")+'</div>'+
