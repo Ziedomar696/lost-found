@@ -449,7 +449,7 @@ function itemsWithStatus_() {
     return {
       id: id, found: iso_(found), time: time_(r['الوقت']), cat: String(r['النوع']), desc: String(r['الوصف']), brand: String(r['اللون والماركة']),
       loc: String(r['مكان العثور']), locd: String(r['تفاصيل المكان']), sup: String(r['المشرف']), sector: String(r['القطاع']), finder: String(r['اللي لقاه']),
-      store: String(r['مكان التخزين']), photo: String(r['الصورة']), confirm: String(r['تأكيد الإدارة']), notes: String(r['ملاحظات']),
+      by: String(r['سجّله'] || '').trim().toLowerCase(), store: String(r['مكان التخزين']), photo: String(r['الصورة']), confirm: String(r['تأكيد الإدارة']), notes: String(r['ملاحظات']),
       valuable: c.valuable, status: status
     };
   });
@@ -494,7 +494,8 @@ function boot(t) {
   if (m.role === 'admin') out.users = accounts_().filter(function (u) { return u.role; }).map(function (u) { return { user: u.user, name: u.name, role: u.role, active: u.active, by: u.by, at: u.at }; });
   if (m.role === 'cr') return out;                       // الكنترول روم: بلاغاتهم بس
   out.items = itemsWithStatus_();
-  if (m.role === 'supervisor') { out.items = out.items.map(function (i) { return { id: i.id, found: i.found, cat: i.cat, desc: i.desc, loc: i.loc, store: i.store, status: i.status }; }); return out; }
+  // المشرف بيشوف اللي هو سجّله بس
+  if (m.role === 'supervisor') { out.items = out.items.filter(function (i) { return i.by === m.user; }).map(function (i) { return { id: i.id, found: i.found, cat: i.cat, desc: i.desc, loc: i.loc, store: i.store, status: i.status }; }); return out; }
   out.permits = permitsWithStatus_();
   out.deliveries = rows_('deliv').map(function (r) {
     return { id: String(r['رقم التسليم']), item: String(r['رقم المفقود']), permit: String(r['رقم الإذن']), at: iso_(r['تاريخ ووقت التسليم'], true),
