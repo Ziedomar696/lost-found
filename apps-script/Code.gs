@@ -802,36 +802,42 @@ function importOld() {
 /** الواجهة بتقرا الملف وتبعت الصفوف هنا على دفعات. المفقود اللي رقمه موجود بيتساب. */
 function importLegacy(t, rows) {
   const m = need_(t, ['admin']);
-  rows = (rows || []).slice(0, 500);
+  rows = (rows || []).slice(0, 2000);
   return withLock_(function () {
     const out = { items: 0, deliv: 0, skipped: 0, cats: 0, locs: 0 };
-    const have = {}; rows_('items').forEach(function (r) { have[String(r['رقم المفقود'])] = 1; });
+    const ish = sheet_('items'), dsh = sheet_('deliv');
+    // أرقام المفقودات الموجودة: بنقرا العمود الأول بس (أسرع بكتير من قراية الشيت كله)
+    const have = {}, li = ish.getLastRow();
+    if (li >= 2) ish.getRange(2, 1, li - 1, 1).getValues().forEach(function (r) { have[String(r[0]).trim()] = 1; });
     const cats = {}; list_('cats', 'النوع').forEach(function (c) { cats[c] = 1; });
     const locs = {}; list_('locs', 'المكان').forEach(function (c) { locs[c] = 1; });
-    const itemsOut = [], delivOut = [];
-    const ih = headers_(sheet_('items')), dh = headers_(sheet_('deliv'));
+    const newCats = [], newLocs = [], itemsOut = [], delivOut = [];
+    const ih = headers_(ish), dh = headers_(dsh), ch = headers_(sheet_('cats')), lh = headers_(sheet_('locs'));
     const row = function (h, o) { return h.map(function (n) { return o[n] === undefined ? '' : o[n]; }); };
+    const day = function (s) { const p = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return p ? new Date(Number(p[1]), Number(p[2]) - 1, Number(p[3]), 12) : ''; };
     rows.forEach(function (x) {
       x = clean_(x);
       const code = String(x.code || '').trim();
       if (!code || have[code]) { out.skipped++; return; }
       const cat = x.cat || 'أخرى', loc = x.loc || '';
-      if (!cats[cat]) { append_('cats', { 'النوع': cat, 'ثمين': 'لا' }); cats[cat] = 1; out.cats++; }
-      if (loc && !locs[loc]) { sheet_('locs').appendRow([loc]); locs[loc] = 1; out.locs++; }
+      if (!cats[cat]) { newCats.push(row(ch, { 'النوع': cat, 'ثمين': 'لا' })); cats[cat] = 1; }
+      if (loc && !locs[loc]) { newLocs.push(row(lh, { 'المكان': loc })); locs[loc] = 1; }
       const notes = ['منقول من شيت الإكسيل', x.qty ? 'العدد: ' + x.qty : '', x.photoPath ? 'الصورة على جهاز المكتب: ' + x.photoPath : '',
         x.note || ''].filter(String).join(' · ');
-      itemsOut.push(row(ih, { 'رقم المفقود': code, 'تاريخ العثور': x.found ? toDate_(x.found) : '', 'النوع': cat, 'الوصف': x.desc || '',
+      itemsOut.push(row(ih, { 'رقم المفقود': code, 'تاريخ العثور': day(x.found), 'النوع': cat, 'الوصف': x.desc || '',
         'مكان العثور': loc, 'اللي لقاه': x.by || '', 'الصورة': '', 'تأكيد الإدارة': 'مؤكد', 'ملاحظات': notes, 'سجّله': m.user, 'أكّده': 'استيراد' }));
       have[code] = 1; out.items++;
       if (x.delivered) {
         delivOut.push(row(dh, { 'رقم التسليم': 'DL-XL-' + code, 'رقم المفقود': code, 'رقم الإذن': 'شيت الإكسيل',
-          'تاريخ ووقت التسليم': x.delivDate ? toDate_(x.delivDate) : '', 'اسم المستلم': x.recName || '', 'الوحدة': x.recUnit || '',
+          'تاريخ ووقت التسليم': day(x.delivDate), 'اسم المستلم': x.recName || '', 'الوحدة': x.recUnit || '',
           'ملاحظات': x.recRaw ? 'المستلم في الشيت: ' + x.recRaw : 'اتسلّم (من شيت الإكسيل)', 'سجّله': m.user }));
         out.deliv++;
       }
     });
-    if (itemsOut.length) { const sh = sheet_('items'); sh.getRange(sh.getLastRow() + 1, 1, itemsOut.length, ih.length).setValues(itemsOut); }
-    if (delivOut.length) { const sh = sheet_('deliv'); sh.getRange(sh.getLastRow() + 1, 1, delivOut.length, dh.length).setValues(delivOut); }
+    const put = function (sh, data, w) { if (data.length) sh.getRange(sh.getLastRow() + 1, 1, data.length, w).setValues(data); };
+    put(sheet_('cats'), newCats, ch.length); put(sheet_('locs'), newLocs, lh.length);
+    put(ish, itemsOut, ih.length); put(dsh, delivOut, dh.length);
+    out.cats = newCats.length; out.locs = newLocs.length;
     return out;
   });
 }

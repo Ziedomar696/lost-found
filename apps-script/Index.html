@@ -427,8 +427,8 @@ function impPreview(rows){IMP=rows;var o=$("#imp_o");
   if(nw.length)$("#imp_go").onclick=function(){impSend(nw,this)}}
 function impSend(rows,b){var i=0,tot={items:0,deliv:0,skipped:0,cats:0,locs:0};b.disabled=true;
   var next=function(){if(i>=rows.length){toast("اتنقل "+tot.items+" مفقود و"+tot.deliv+" تسليم");reload(function(){$("#imp_o").innerHTML='<div class="note i">اتنقل '+tot.items+' مفقود، منهم '+tot.deliv+' متسلّم'+(tot.cats||tot.locs?'، واتضاف '+tot.cats+' نوع و'+tot.locs+' مكان للقوائم':'')+(tot.skipped?'. اتساب '+tot.skipped+' موجود قبل كده':'')+'.</div>'});return}
-    $("#imp_msg").textContent="جاري النقل… "+i+" من "+rows.length;
-    call("importLegacy",[rows.slice(i,i+300)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=300;next()},b)};
+    $("#imp_msg").textContent="جاري النقل… "+Math.round(i*100/rows.length)+"% ("+i+" من "+rows.length+")";
+    call("importLegacy",[rows.slice(i,i+1500)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=1500;next()},b)};
   next()}
 function lEdit(k,i){var L=LISTS_UI.filter(function(x){return x[0]===k})[0],x=i>=0?listItems(k)[i]:{name:"",valuable:false};
   modal('<h3 style="margin:0">'+(i>=0?"تعديل":"إضافة")+' · '+L[1]+'</h3><div class="f">'+fld(L[2],'<input id="le_name" value="'+esc(x.name)+'">')+
