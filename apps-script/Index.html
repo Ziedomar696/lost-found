@@ -425,10 +425,16 @@ function impPreview(rows){IMP=rows;var o=$("#imp_o");
    '<p class="sub">الصور اللي في الشيت متخزنة على جهاز المكتب، فمش هتتنقل. مسار كل صورة هيتكتب في ملاحظات المفقود. الأنواع والأماكن الجديدة هتتضاف للقوائم، وتقدر تغيّر أسماءها بالعربي بعد كده من هنا.</p>'+
    (nw.length?'<div class="btns"><button class="btn p" id="imp_go">استيراد '+nw.length+' مفقود</button><span class="sub" id="imp_msg"></span></div>':'');
   if(nw.length)$("#imp_go").onclick=function(){impSend(nw,this)}}
-function impSend(rows,b){var i=0,tot={items:0,deliv:0,skipped:0,cats:0,locs:0};b.disabled=true;
-  var next=function(){if(i>=rows.length){toast("اتنقل "+tot.items+" مفقود و"+tot.deliv+" تسليم");reload(function(){$("#imp_o").innerHTML='<div class="note i">اتنقل '+tot.items+' مفقود، منهم '+tot.deliv+' متسلّم'+(tot.cats||tot.locs?'، واتضاف '+tot.cats+' نوع و'+tot.locs+' مكان للقوائم':'')+(tot.skipped?'. اتساب '+tot.skipped+' موجود قبل كده':'')+'.</div>'});return}
-    $("#imp_msg").textContent="جاري النقل… "+Math.round(i*100/rows.length)+"% ("+i+" من "+rows.length+")";
-    call("importLegacy",[rows.slice(i,i+1500)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=1500;next()},b)};
+function impSend(rows,b){var i=0,tot={items:0,deliv:0,skipped:0,cats:0,locs:0},t0=Date.now(),N=1500;b.disabled=true;
+  var sec=function(){return Math.round((Date.now()-t0)/1000)};
+  var next=function(){
+    if(i>=rows.length){
+      // النتيجة بتظهر على طول، وتحديث البيانات بيحصل في الخلفية
+      $("#imp_o").innerHTML='<div class="note i">اتنقل '+tot.items+' مفقود في '+sec()+' ثانية، منهم '+tot.deliv+' متسلّم'+(tot.cats||tot.locs?'، واتضاف '+tot.cats+' نوع و'+tot.locs+' مكان للقوائم':'')+(tot.skipped?'. اتساب '+tot.skipped+' موجود قبل كده':'')+'.</div>';
+      toast("خلص النقل");call("boot",[],function(x){D=x});return}
+    var left=i?Math.round(sec()/i*(rows.length-i)):0;
+    $("#imp_msg").textContent="جاري النقل… "+Math.round(i*100/rows.length)+"% ("+i+" من "+rows.length+")"+(left?" · فاضل حوالي "+left+" ثانية":"");
+    call("importLegacy",[rows.slice(i,i+N)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=N;next()},b)};
   next()}
 function lEdit(k,i){var L=LISTS_UI.filter(function(x){return x[0]===k})[0],x=i>=0?listItems(k)[i]:{name:"",valuable:false};
   modal('<h3 style="margin:0">'+(i>=0?"تعديل":"إضافة")+' · '+L[1]+'</h3><div class="f">'+fld(L[2],'<input id="le_name" value="'+esc(x.name)+'">')+
