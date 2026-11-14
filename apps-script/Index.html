@@ -41,7 +41,7 @@ table{border-collapse:collapse;width:100%;font-size:14px}th,td{border-bottom:1px
 var D=null, view="", F={q:"",st:"all",cat:"",from:"",to:""};
 var TABS={dash:"لوحة المتابعة",reg:"تسجيل مفقود",store:"المخزن والبحث",permits:"أذونات الخروج",reports:"بلاغات الفقد",cr:"الكنترول روم",users:"الحسابات",lists:"القوائم"};
 var ROLE_TABS={admin:["dash","reg","store","permits","reports","cr","users","lists"],keeper:["dash","reg","store","permits","reports"],supervisor:["reg","store"],cr:["cr"]};
-var STORED=["في المخزن","متأخر عن مدة الحفظ"];
+var STORED=["في المخزن"];
 function $(s){return document.querySelector(s)}
 function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 function fd(s){if(!s)return "—";var p=String(s).split("T"),d=p[0].split("-");return d[2]+"/"+d[1]+"/"+d[0]+(p[1]?" "+p[1]:"")}
@@ -77,14 +77,13 @@ function rDash(){
   var from=F.dfrom||D.today.slice(0,8)+"01", to=F.dto||D.today;
   var inR=it.filter(function(i){return i.found>=from&&i.found<=to});
   var byCat={};D.lists.cats.forEach(function(c){byCat[c.name]={t:0,s:0,o:0,d:0,x:0}});
-  inR.forEach(function(i){var b=byCat[i.cat]||(byCat[i.cat]={t:0,s:0,o:0,d:0,x:0});b.t++;if(i.status==="في المخزن")b.s++;if(i.status==="متأخر عن مدة الحفظ"){b.s++;b.o++}if(i.status==="تم التسليم")b.d++;if(i.status==="سُلّم لجهة أخرى")b.x++});
-  var rows=Object.keys(byCat).filter(function(k){return byCat[k].t}).map(function(k){var b=byCat[k];return "<tr><td>"+esc(k)+"</td><td>"+b.t+"</td><td>"+b.s+"</td><td>"+(b.o?'<b style="color:var(--crit)">'+b.o+"</b>":0)+"</td><td>"+b.d+"</td><td>"+b.x+"</td></tr>"}).join("");
+  inR.forEach(function(i){var b=byCat[i.cat]||(byCat[i.cat]={t:0,s:0,o:0,d:0,x:0});b.t++;if(i.status==="في المخزن")b.s++;if(i.status==="تم التسليم")b.d++;if(i.status==="سُلّم لجهة أخرى")b.x++});
+  var rows=Object.keys(byCat).filter(function(k){return byCat[k].t}).map(function(k){var b=byCat[k];return "<tr><td>"+esc(k)+"</td><td>"+b.t+"</td><td>"+b.s+"</td><td>"+b.d+"</td><td>"+b.x+"</td></tr>"}).join("");
   var pend=D.permits.filter(function(p){return p.status==="منتظر موافقة الإدارة"}).length;
   var late=D.cr.filter(function(c){return !c.replied&&slaLeft(c)<0}).length;
   $("#app").innerHTML=
    '<div class="kpis">'+
    k(cnt(function(i){return STORED.indexOf(i.status)>=0}),"في المخزن الآن")+
-   k(cnt(function(i){return i.status==="متأخر عن مدة الحفظ"}),"متأخر عن مدة الحفظ",1)+
    k(cnt(function(i){return i.status==="منتظر تأكيد الإدارة"}),"منتظر تأكيد الإدارة",1)+
    k(cnt(function(i){return i.found===D.today}),"استلام النهارده")+
    k(D.deliveries.filter(function(d){return d.at.slice(0,10)===D.today}).length,"تسليم النهارده")+
@@ -92,7 +91,7 @@ function rDash(){
    k(D.reports.filter(function(r){return r.status==="مفتوح"}).length,"بلاغات مفتوحة")+
    k(late,"الكنترول روم متأخر",1)+'</div>'+
    '<div class="card"><h2>حصر حسب النوع</h2><div class="btns" style="margin-bottom:10px"><label>من</label><input type="date" id="dfrom" value="'+from+'" style="width:auto"><label>إلى</label><input type="date" id="dto" value="'+to+'" style="width:auto"><button class="btn p" onclick="F.dfrom=val(\'dfrom\');F.dto=val(\'dto\');rDash()">اعرض</button></div>'+
-   (rows?'<table><tr><th>النوع</th><th>المستلم</th><th>في المخزن</th><th>متأخر</th><th>اتسلّم</th><th>لجهة أخرى</th></tr>'+rows+'<tr style="font-weight:700"><td>الإجمالي</td><td>'+inR.length+'</td><td colspan="4"></td></tr></table>':'<p class="sub">مفيش مفقودات في الفترة دي.</p>')+'</div>';
+   (rows?'<table><tr><th>النوع</th><th>المستلم</th><th>في المخزن</th><th>اتسلّم</th><th>لجهة أخرى</th></tr>'+rows+'<tr style="font-weight:700"><td>الإجمالي</td><td>'+inR.length+'</td><td colspan="4"></td></tr></table>':'<p class="sub">مفيش مفقودات في الفترة دي.</p>')+'</div>';
   function k(n,t,c){return '<div class="kpi'+(c&&n?" c":"")+'"><b>'+n+'</b><span>'+t+'</span></div>'}
 }
 
@@ -138,7 +137,7 @@ function rStore(){
     if(F.from&&i.found<F.from)return false; if(F.to&&i.found>F.to)return false;
     if(q&&[i.id,i.cat,i.desc,i.brand,i.loc,i.locd,i.store,i.sup,i.notes].join(" ").toLowerCase().indexOf(q)<0)return false;
     return true}).sort(function(a,b){return b.id<a.id?-1:1});
-  var chips=[["all","الكل"],["stored","في المخزن"],["متأخر عن مدة الحفظ","متأخر"],["منتظر تأكيد الإدارة","منتظر تأكيد"],["تم التسليم","تم التسليم"],["سُلّم لجهة أخرى","لجهة أخرى"]];
+  var chips=[["all","الكل"],["stored","في المخزن"],["منتظر تأكيد الإدارة","منتظر تأكيد"],["تم التسليم","تم التسليم"],["سُلّم لجهة أخرى","لجهة أخرى"]];
   $("#app").innerHTML='<div class="card"><h2>المخزن والبحث</h2>'+
    '<div class="filters"><input class="q" id="s_q" placeholder="رقم المفقود، الوصف، المكان… (أو امسح الباركود)" value="'+esc(F.q)+'"><select id="s_cat">'+opts(D.lists.cats.map(function(c){return c.name}),F.cat,"كل الأنواع")+'</select><input type="date" id="s_from" value="'+F.from+'" title="من"><input type="date" id="s_to" value="'+F.to+'" title="إلى"><button class="btn" onclick="F={q:\'\',st:\'all\',cat:\'\',from:\'\',to:\'\'};rStore()">مسح</button></div>'+
    '<div class="chips">'+chips.map(function(c){return '<button class="chip'+(F.st===c[0]?" on":"")+'" onclick="F.st=\''+c[0]+'\';rStore()">'+c[1]+'</button>'}).join("")+'</div>'+
@@ -161,7 +160,7 @@ function openItem(id,mode){
   var dl=D.deliveries.filter(function(d){return d.item===id})[0], ot=D.others.filter(function(o){return o.item===id})[0];
   var h='<div class="btns"><span class="tag" style="font-size:16px">'+esc(i.id)+'</span>'+pill(i.status)+(i.valuable?'<span class="pill w">ثمين</span>':'')+'<button class="btn" style="margin-inline-start:auto" onclick="closeM()">إغلاق</button></div>'+
   (i.photo?fileLink(i.photo,"عرض صورة المفقود"):'')+
-  '<dl><dt>النوع</dt><dd>'+esc(i.cat)+'</dd><dt>الوصف</dt><dd>'+esc(i.desc)+(i.brand?" · "+esc(i.brand):"")+'</dd><dt>العثور</dt><dd>'+fd(i.found)+" "+esc(i.time)+" · "+esc(i.loc)+(i.locd?" · "+esc(i.locd):"")+'</dd><dt>المشرف</dt><dd>'+esc(i.sup||"—")+(i.sector?" · "+esc(i.sector):"")+'</dd><dt>مكان التخزين</dt><dd><b>'+esc(i.store||"—")+'</b></dd><dt>مدة الحفظ</dt><dd>'+i.days+' يوم · حتى '+fd(i.due)+'</dd>'+(i.notes?'<dt>ملاحظات</dt><dd>'+esc(i.notes)+'</dd>':'')+'</dl>';
+  '<dl><dt>النوع</dt><dd>'+esc(i.cat)+'</dd><dt>الوصف</dt><dd>'+esc(i.desc)+(i.brand?" · "+esc(i.brand):"")+'</dd><dt>العثور</dt><dd>'+fd(i.found)+" "+esc(i.time)+" · "+esc(i.loc)+(i.locd?" · "+esc(i.locd):"")+'</dd><dt>المشرف</dt><dd>'+esc(i.sup||"—")+(i.sector?" · "+esc(i.sector):"")+'</dd><dt>مكان التخزين</dt><dd><b>'+esc(i.store||"—")+'</b></dd>'+(i.notes?'<dt>ملاحظات</dt><dd>'+esc(i.notes)+'</dd>':'')+'</dl>';
   if(dl)h+='<div class="sec"><h3>بيانات التسليم</h3><dl><dt>المستلم</dt><dd>'+esc(dl.name)+" · "+esc(dl.res)+" "+esc(dl.unit)+'</dd><dt>الهوية</dt><dd>'+esc(dl.idType)+" "+esc(dl.idNo)+'</dd><dt>الموبايل</dt><dd>'+esc(dl.phone)+'</dd><dt>التاريخ</dt><dd>'+fd(dl.at)+'</dd><dt>الإذن</dt><dd>'+esc(dl.permit)+'</dd><dt>إثبات الملكية</dt><dd>'+esc(dl.proofs)+'</dd><dt>خرّجه</dt><dd>'+esc(dl.releasedBy)+'</dd><dt>الشاهد</dt><dd>'+esc(dl.witness||"—")+'</dd></dl><div class="btns">'+(dl.sig?fileLink(dl.sig,"التوقيع"):'')+(dl.idPhoto?fileLink(dl.idPhoto,"صورة الهوية"):'')+(dl.appPhoto?fileLink(dl.appPhoto,"صورة الأبلكيشن / QR"):'')+'</div></div>';
   if(ot)h+='<div class="sec"><h3>تسليم لجهة أخرى</h3><dl><dt>الجهة</dt><dd>'+esc(ot.party)+'</dd><dt>التاريخ</dt><dd>'+fd(ot.date)+'</dd><dt>المحضر</dt><dd>'+esc(ot.ref||"—")+'</dd><dt>الإذن</dt><dd>'+esc(ot.permit)+'</dd><dt>خرّجه</dt><dd>'+esc(ot.releasedBy)+'</dd></dl></div>';
   if(i.status==="منتظر تأكيد الإدارة"&&adm)h+='<div class="sec"><h3>تأكيد الإدارة</h3><div class="f">'+fld("مكان التخزين",'<select id="c_store">'+opts(D.lists.stores,i.store)+'</select>')+'</div><div class="btns"><button class="btn p" onclick="call(\'confirmItem\',[\''+id+'\',\'مؤكد\',val(\'c_store\')],function(){reload(function(){openItem(\''+id+'\')});toast(\'اتأكد\')},this)">تأكيد ودخول المخزن</button><button class="btn d" onclick="call(\'confirmItem\',[\''+id+'\',\'مرفوض\',\'\'],function(){reload();closeM()},this)">رفض</button></div></div>';
@@ -180,11 +179,38 @@ function openItem(id,mode){
   if(mode==="req")h+=reqForm(i);
   if(mode==="deliver")h+=delivForm(i,p);
   if(mode==="dispose")h+='<div class="sec"><h3>تسليم لجهة أخرى</h3><div class="f">'+fld("الجهة",'<select id="x_party">'+opts(D.lists.parties)+'</select>')+fld("رقم المحضر / المرجع",'<input id="x_ref">')+fld("جهة الاستلام",'<input id="x_to">')+fld("خرّجه من المخزن",staffSel("x_rel"))+'<div class="fld wide"><label>ملاحظات</label><input id="x_notes"></div></div><div class="btns"><button class="btn p" id="x_go">تأكيد</button><button class="btn" onclick="openItem(\''+id+'\')">رجوع</button></div></div>';
-  h+='<div class="sec"><h3>الملصق</h3><div class="btns"><div id="qr" style="width:120px"></div><div><span class="tag" style="font-size:16px">'+esc(i.id)+'</span><p class="sub">'+esc(i.cat)+' · '+fd(i.found)+' · '+esc(i.store||"")+'</p><p class="sub">صوّر الشاشة أو اطبعها والزق الملصق على الكيس.</p></div></div></div>';
+  h+='<div class="sec"><h3>الملصق</h3><div class="btns"><div id="qr" style="width:120px"></div><div><span class="tag" style="font-size:16px">'+esc(i.id)+'</span><p class="sub">'+esc(i.cat)+' · '+fd(i.found)+' · '+esc(i.store||"")+'</p><div class="btns"><button class="btn p" onclick="printLabel(\''+esc(i.id)+'\')">طباعة الكود</button><button class="btn" onclick="labelSettings(\''+esc(i.id)+'\')">مقاس الملصق</button></div></div></div></div>';
   modal(h); drawQR(i.id);
   if(mode==="req")bindReq(i); if(mode==="deliver")bindDeliv(i,p);
   if(mode==="dispose")$("#x_go").onclick=function(){call("dispose",[{item:id,permit:(p&&p.purpose==="تسليم لجهة أخرى")?p.id:"",party:val("x_party"),ref:val("x_ref"),to:val("x_to"),releasedBy:val("x_rel"),notes:val("x_notes")}],function(){toast("اتسجّل التسليم لجهة أخرى");reload(function(){openItem(id)})},this)};
 }
+/* ---------- طباعة الكود (طابعة الملصقات) ---------- */
+var C128="212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 221312 231212 112232 122132 122231 113222 123122 123221 223211 221132 221231 213212 223112 312131 311222 321122 321221 312212 322112 322211 212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 231113 231311 112133 112331 132131 113123 113321 133121 313121 211331 231131 213113 213311 213131 311123 311321 331121 312113 312311 332111 314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 111242 121142 121241 114212 124112 124211 411212 421112 421211 212141 214121 412121 111143 111341 131141 114113 114311 411113 411311 113141 114131 311141 411131 211412 211214 211232 2331112".split(" ");
+/* باركود Code128 (مجموعة B) كـ SVG، بيتقري بأي ماسح باركود عادي. */
+function code128(txt,hmm){var v=[104],sum=104;for(var i=0;i<txt.length;i++){var c=txt.charCodeAt(i)-32;if(c<0||c>94)c=0;v.push(c);sum+=c*(i+1)}v.push(sum%103);v.push(106);
+  var x=10,bars="";v.forEach(function(k){var p=C128[k];for(var j=0;j<p.length;j++){var w=+p[j];if(j%2===0)bars+='<rect x="'+x+'" y="0" width="'+w+'" height="1"/>';x+=w}});
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 '+(x+10)+' 1" preserveAspectRatio="none" shape-rendering="crispEdges" style="width:100%;height:'+hmm+'mm;display:block">'+bars+'</svg>'}
+function labelCfg(){var d={w:50,h:25,type:"bar"};try{var s=JSON.parse(localStorage.getItem("mf_label")||"null");if(s&&s.w&&s.h)d=s}catch(e){}return d}
+function labelSettings(id){var c=labelCfg();
+  modal('<h3 style="margin:0">مقاس الملصق</h3><p class="sub" style="margin:0">اكتب مقاس ورق طابعة الملصقات بالمللي. الإعداد ده بيتحفظ على الجهاز ده بس.</p><div class="f">'+
+   fld("العرض (مم)",'<input id="lb_w" type="number" min="20" max="150" value="'+c.w+'">')+fld("الارتفاع (مم)",'<input id="lb_h" type="number" min="10" max="150" value="'+c.h+'">')+
+   fld("الشكل",'<select id="lb_t"><option value="bar"'+(c.type==="bar"?" selected":"")+'>باركود (لأي ماسح)</option><option value="qr"'+(c.type==="qr"?" selected":"")+'>QR (لماسح QR أو الموبايل)</option><option value="both"'+(c.type==="both"?" selected":"")+'>الاتنين</option></select>')+'</div>'+
+   '<div class="btns"><button class="btn p" id="lb_go">حفظ وطباعة</button><button class="btn" onclick="openItem(\''+esc(id)+'\')">رجوع</button></div>');
+  $("#lb_go").onclick=function(){var w=+val("lb_w"),h=+val("lb_h");if(!(w>=20&&w<=150&&h>=10&&h<=150))return toast("المقاس من 20 لـ 150 مم للعرض، ومن 10 لـ 150 للارتفاع");
+    try{localStorage.setItem("mf_label",JSON.stringify({w:w,h:h,type:val("lb_t")}))}catch(e){}openItem(id);printLabel(id)}}
+function printLabel(id){var i=D.items.filter(function(x){return x.id===id})[0];if(!i)return;var c=labelCfg(),pad=1.5,w=c.w-2*pad,h=c.h-2*pad;
+  var txt=Math.max(2.6,Math.min(5,h*0.2)),sub=Math.max(1.8,Math.min(2.8,h*0.11));
+  var qrSvg="";if(c.type!=="bar"&&window.qrcode){try{var q=qrcode(0,"M");q.addData(i.id);q.make();qrSvg=q.createSvgTag({cellSize:4,margin:0,scalable:true})}catch(e){}}
+  var info='<div style="font:700 '+txt+'mm/1.1 Arial,sans-serif;direction:ltr;white-space:nowrap">'+esc(i.id)+'</div><div style="font:'+sub+'mm/1.15 Arial,sans-serif;white-space:nowrap;overflow:hidden">'+esc(i.cat)+' · '+fd(i.found)+'</div>';
+  var body;
+  if(c.type==="qr"&&qrSvg){var s=Math.min(h,w*0.45);body='<div style="display:flex;gap:1.5mm;align-items:center;height:'+h+'mm"><div style="width:'+s+'mm;height:'+s+'mm;flex:none">'+qrSvg+'</div><div style="min-width:0">'+info+'</div></div>'}
+  else if(c.type==="both"&&qrSvg){var s2=Math.min(h,w*0.3);body='<div style="display:flex;gap:1.5mm;align-items:center;height:'+h+'mm"><div style="width:'+s2+'mm;height:'+s2+'mm;flex:none">'+qrSvg+'</div><div style="flex:1;min-width:0">'+code128(i.id,Math.max(5,h-txt-sub-2))+info+'</div></div>'}
+  else body='<div style="height:'+h+'mm;display:flex;flex-direction:column;justify-content:center;text-align:center">'+code128(i.id,Math.max(5,h-txt-sub-2))+info+'</div>';
+  var st=document.getElementById("lbl_css");if(!st){st=document.createElement("style");st.id="lbl_css";document.head.appendChild(st)}
+  st.textContent="@media print{@page{size:"+c.w+"mm "+c.h+"mm;margin:0}html,body{width:"+c.w+"mm;height:"+c.h+"mm;margin:0!important;padding:0!important;background:#fff!important;overflow:hidden}body>*{display:none!important}#lbl{display:block!important}}";
+  var el=document.getElementById("lbl");if(!el){el=document.createElement("div");el.id="lbl";el.style.display="none";document.body.appendChild(el)}
+  el.innerHTML='<div style="width:'+w+'mm;height:'+h+'mm;padding:'+pad+'mm;color:#000;background:#fff;overflow:hidden">'+body+'</div>';
+  setTimeout(function(){window.print()},50)}
 function staffSel(id){return D.lists.staff.length?'<select id="'+id+'">'+opts(D.lists.staff,"","اختار الاسم…")+'</select>':'<input id="'+id+'" placeholder="اسم الموظف">'}
 function drawQR(t){var e=$("#qr");if(!e||!window.qrcode)return;try{var q=qrcode(0,"M");q.addData(t);q.make();e.innerHTML=q.createSvgTag({cellSize:4,margin:0,scalable:true})}catch(x){}}
 
@@ -357,7 +383,7 @@ function listItems(k){return k==="cats"?D.lists.cats:D.lists[k].map(function(n){
 function rLists(){
   $("#app").innerHTML=impCard()+LISTS_UI.map(function(L){var k=L[0],arr=listItems(k);
     return '<div class="card"><div class="btns" style="justify-content:space-between"><h2 style="margin:0">'+L[1]+' ('+arr.length+')</h2><button class="btn p" onclick="lEdit(\''+k+'\',-1)">+ إضافة</button></div>'+
-     (arr.map(function(x,i){return '<div class="row" style="cursor:default"><div class="m"><div class="d">'+esc(x.name)+(x.valuable?' <span class="pill w">ثمين</span>':'')+'</div>'+(k==="cats"?'<div class="s">مدة الحفظ '+x.days+' يوم</div>':'')+'</div><button class="btn" onclick="lEdit(\''+k+'\','+i+')">تعديل</button><button class="btn d" onclick="lDel(\''+k+'\','+i+')">مسح</button></div>'}).join("")||'<p class="sub">فاضية.</p>')+'</div>'}).join("");
+     (arr.map(function(x,i){return '<div class="row" style="cursor:default"><div class="m"><div class="d">'+esc(x.name)+(x.valuable?' <span class="pill w">ثمين</span>':'')+'</div>'+'</div><button class="btn" onclick="lEdit(\''+k+'\','+i+')">تعديل</button><button class="btn d" onclick="lDel(\''+k+'\','+i+')">مسح</button></div>'}).join("")||'<p class="sub">فاضية.</p>')+'</div>'}).join("");
 }
 /* ---------- استيراد من Excel ---------- */
 var IMP=null;
@@ -404,13 +430,13 @@ function impSend(rows,b){var i=0,tot={items:0,deliv:0,skipped:0,cats:0,locs:0};b
     $("#imp_msg").textContent="جاري النقل… "+i+" من "+rows.length;
     call("importLegacy",[rows.slice(i,i+300)],function(r){["items","deliv","skipped","cats","locs"].forEach(function(k){tot[k]+=r[k]});i+=300;next()},b)};
   next()}
-function lEdit(k,i){var L=LISTS_UI.filter(function(x){return x[0]===k})[0],x=i>=0?listItems(k)[i]:{name:"",days:30,valuable:false};
+function lEdit(k,i){var L=LISTS_UI.filter(function(x){return x[0]===k})[0],x=i>=0?listItems(k)[i]:{name:"",valuable:false};
   modal('<h3 style="margin:0">'+(i>=0?"تعديل":"إضافة")+' · '+L[1]+'</h3><div class="f">'+fld(L[2],'<input id="le_name" value="'+esc(x.name)+'">')+
-   (k==="cats"?fld("مدة الحفظ (يوم)",'<input id="le_days" type="number" min="1" value="'+x.days+'">')+'<div class="fld"><label>&nbsp;</label><label style="font-weight:500;display:flex;gap:6px;align-items:center"><input type="checkbox" id="le_val" style="width:auto"'+(x.valuable?" checked":"")+'> ثمين (خزنة، وطريقتين إثبات، وشاهد وصورة هوية عند التسليم)</label></div>':"")+'</div>'+
+   (k==="cats"?'<div class="fld"><label>&nbsp;</label><label style="font-weight:500;display:flex;gap:6px;align-items:center"><input type="checkbox" id="le_val" style="width:auto"'+(x.valuable?" checked":"")+'> ثمين (خزنة، وطريقتين إثبات، وشاهد وصورة هوية عند التسليم)</label></div>':"")+'</div>'+
    (i>=0&&k!=="staff"&&k!=="parties"?'<p class="sub" style="margin:0">لو غيّرت الاسم، المفقودات'+(k==="stores"?"":" والبلاغات")+' القديمة هتتحدّث بالاسم الجديد.</p>':'')+
    '<div class="btns"><button class="btn p" id="le_go">حفظ</button><button class="btn" onclick="closeM()">إلغاء</button></div>');
   $("#le_name").focus();
-  $("#le_go").onclick=function(){call("listSave",[k,i>=0?x.name:"",{name:val("le_name"),days:k==="cats"?val("le_days"):"",valuable:k==="cats"&&$("#le_val").checked}],function(r){closeM();toast(r&&r.renamed?"اتحفظ واتحدّث "+r.renamed+" سجل قديم":"اتحفظ");reload()},this)}}
+  $("#le_go").onclick=function(){call("listSave",[k,i>=0?x.name:"",{name:val("le_name"),valuable:k==="cats"&&$("#le_val").checked}],function(r){closeM();toast(r&&r.renamed?"اتحفظ واتحدّث "+r.renamed+" سجل قديم":"اتحفظ");reload()},this)}}
 function lDel(k,i){var x=listItems(k)[i];confirmM("مسح «"+esc(x.name)+"» من القايمة؟ المفقودات القديمة هتفضل بالاسم ده.","مسح",function(b){call("listDelete",[k,x.name],function(){closeM();toast("اتمسح");reload()},b)})}
 
 /* ---------- الدخول ---------- */

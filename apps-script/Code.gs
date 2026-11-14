@@ -45,7 +45,7 @@ const SHEETS = {
   other:   { name: 'جهات_أخرى', headers: ['رقم العملية','رقم المفقود','رقم الإذن','التاريخ','الجهة','رقم المحضر','جهة الاستلام','خرّجه من المخزن','ملاحظات','سجّله'] },
   reports: { name: 'البلاغات', headers: ['رقم البلاغ','تاريخ البلاغ','الاسم','الموبايل','صفته في مراسي','الوحدة','النوع','الوصف','اللون والماركة','ضاعت من','لحد','المكان المتوقع','تفاصيل المكان','رقم المفقود المطابق','حالة البلاغ','متابعات','سجّله'] },
   cr:      { name: 'الكنترول_روم', headers: ['رقم البلاغ','تاريخ ووقت الإرسال','الأولوية','المطلوب','الأماكن والكاميرات','فترة المراجعة','خط سير صاحب البلاغ','أوصاف صاحب البلاغ','نتيجة المراجعة','الكاميرات اللي اتراجعت','الإفادة','الصور','تاريخ ووقت الرد','ملخص البلاغ','رد بواسطة'] },
-  cats:    { name: 'الأنواع', headers: ['النوع','مدة الحفظ','ثمين'], seed: [['هواتف وأجهزة إلكترونية',90,'نعم'],['محافظ ونقود',90,'نعم'],['مجوهرات وساعات',90,'نعم'],['بطاقات هوية ومستندات',14,'نعم'],['مفاتيح',60,'لا'],['حقائب',60,'لا'],['نظارات',30,'لا'],['ملابس وأحذية',30,'لا'],['مستلزمات شاطئ ومناشف',14,'لا'],['ألعاب أطفال',30,'لا'],['مأكولات ومشروبات',1,'لا'],['أخرى',30,'لا']] },
+  cats:    { name: 'الأنواع', headers: ['النوع','ثمين'], seed: [['هواتف وأجهزة إلكترونية','نعم'],['محافظ ونقود','نعم'],['مجوهرات وساعات','نعم'],['بطاقات هوية ومستندات','نعم'],['مفاتيح','لا'],['حقائب','لا'],['نظارات','لا'],['ملابس وأحذية','لا'],['مستلزمات شاطئ ومناشف','لا'],['ألعاب أطفال','لا'],['مأكولات ومشروبات','لا'],['أخرى','لا']] },
   locs:    { name: 'أماكن_العثور', headers: ['المكان'], seed: [['البوابة الرئيسية'],['البوابات الفرعية'],['الشاطئ'],['المارينا'],['الممشى والكورنيش'],['المطاعم والكافيهات'],['الفلل والشاليهات'],['الفنادق'],['النوادي والملاعب'],['الجراجات ومواقف السيارات'],['أخرى']] },
   stores:  { name: 'أماكن_التخزين', headers: ['المكان'], seed: [['الخزنة (للثمين)'],['رف A'],['رف B'],['رف C'],['صندوق الملابس'],['صندوق المستلزمات']] },
   staff:   { name: 'الموظفين', headers: ['الاسم'], seed: [] },
@@ -81,6 +81,10 @@ function setup_() {
       sh.setFrozenRows(1);
       if (def.seed && def.seed.length) sh.getRange(2, 1, def.seed.length, def.seed[0].length).setValues(def.seed);
       return;
+    }
+    if (k === 'cats') {   // مدة الحفظ اتشالت من النظام
+      const hc = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0].map(String).indexOf('مدة الحفظ');
+      if (hc >= 0) sh.deleteColumn(hc + 1);
     }
     const last = Math.max(1, sh.getLastColumn());
     const have = sh.getRange(1, 1, 1, last).getValues()[0].map(String);
@@ -284,7 +288,7 @@ function renameIn_(k, col, from, to) {
   if (n) rg.setValues(v);
   return n;
 }
-/** إضافة (oldName فاضي) أو تعديل عنصر في قايمة. للأنواع: o.days و o.valuable. */
+/** إضافة (oldName فاضي) أو تعديل عنصر في قايمة. للأنواع: o.valuable. */
 function listSave(t, kind, oldName, o) {
   need_(t, ['admin']);
   const L = LISTS[kind];
@@ -293,19 +297,16 @@ function listSave(t, kind, oldName, o) {
   const name = String(o.name || '').trim();
   oldName = String(oldName || '').trim();
   if (!name) throw new Error('اكتب ' + L.label + '.');
-  let row = [name];
-  if (kind === 'cats') {
-    const days = Math.round(Number(o.days));
-    if (!(days >= 1 && days <= 3650)) throw new Error('مدة الحفظ لازم تبقى رقم أيام (من 1 لـ 3650).');
-    row = [name, days, o.valuable ? 'نعم' : 'لا'];
-  }
+  const rec = {}; rec[SHEETS[kind].headers[0]] = name;
+  if (kind === 'cats') rec['ثمين'] = o.valuable ? 'نعم' : 'لا';
   return withLock_(function () {
     const exists = rowOf_(kind, name);
     if (exists > 0 && name !== oldName) throw new Error('«' + name + '» موجود بالفعل.');
-    if (!oldName) { sheet_(kind).appendRow(row); return { renamed: 0 }; }
+    if (!oldName) { append_(kind, rec); return { renamed: 0 }; }
     const r = rowOf_(kind, oldName);
     if (r < 0) throw new Error('«' + oldName + '» مش موجود.');
-    sheet_(kind).getRange(r, 1, 1, row.length).setValues([row]);
+    const h = headers_(sheet_(kind));
+    Object.keys(rec).forEach(function (n) { const c = h.indexOf(n); if (c >= 0) sheet_(kind).getRange(r, c + 1).setValue(rec[n]); });
     let n = 0;
     if (name !== oldName) L.rename.forEach(function (x) { n += renameIn_(x[0], x[1], oldName, name); });
     return { renamed: n };
@@ -428,7 +429,7 @@ function clean_(o) { const r = {}; Object.keys(o || {}).forEach(function (k) { r
 /* ===================== حالة المفقود ===================== */
 function catMap_() {
   const m = {};
-  rows_('cats').forEach(function (r) { m[String(r['النوع'])] = { days: Number(r['مدة الحفظ']) || 30, valuable: String(r['ثمين']) === 'نعم' }; });
+  rows_('cats').forEach(function (r) { m[String(r['النوع'])] = { valuable: String(r['ثمين']) === 'نعم' }; });
   return m;
 }
 function itemsWithStatus_() {
@@ -438,20 +439,18 @@ function itemsWithStatus_() {
   const today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
   return rows_('items').map(function (r) {
     const id = String(r['رقم المفقود']);
-    const c = cats[String(r['النوع'])] || { days: 30, valuable: false };
+    const c = cats[String(r['النوع'])] || { valuable: false };
     const found = r['تاريخ العثور'] instanceof Date ? r['تاريخ العثور'] : toDate_(r['تاريخ العثور']);
-    const due = found ? new Date(found.getTime() + c.days * 86400000) : '';
     let status = 'في المخزن';
     if (delivered[id]) status = 'تم التسليم';
     else if (disposed[id]) status = 'سُلّم لجهة أخرى';
     else if (r['تأكيد الإدارة'] === 'مرفوض') status = 'مرفوض';
     else if (r['تأكيد الإدارة'] !== 'مؤكد') status = 'منتظر تأكيد الإدارة';
-    else if (due && iso_(due) < today) status = 'متأخر عن مدة الحفظ';
     return {
       id: id, found: iso_(found), time: time_(r['الوقت']), cat: String(r['النوع']), desc: String(r['الوصف']), brand: String(r['اللون والماركة']),
       loc: String(r['مكان العثور']), locd: String(r['تفاصيل المكان']), sup: String(r['المشرف']), sector: String(r['القطاع']), finder: String(r['اللي لقاه']),
       store: String(r['مكان التخزين']), photo: String(r['الصورة']), confirm: String(r['تأكيد الإدارة']), notes: String(r['ملاحظات']),
-      days: c.days, due: iso_(due), valuable: c.valuable, status: status
+      valuable: c.valuable, status: status
     };
   });
 }
@@ -481,7 +480,7 @@ function permitsWithStatus_() {
 function boot(t) {
   const m = need_(t, ['admin', 'keeper', 'supervisor', 'cr']);
   const lists = {
-    cats: rows_('cats').map(function (r) { return { name: String(r['النوع']), days: Number(r['مدة الحفظ']) || 30, valuable: String(r['ثمين']) === 'نعم' }; }),
+    cats: rows_('cats').map(function (r) { return { name: String(r['النوع']), valuable: String(r['ثمين']) === 'نعم' }; }),
     locs: list_('locs', 'المكان'), stores: list_('stores', 'المكان'), staff: list_('staff', 'الاسم'), parties: list_('parties', 'الجهة'),
     prios: rows_('prios').map(function (r) { return { name: String(r['الأولوية']), hours: hours_(r['المهلة']) || 24 }; })
   };
@@ -550,7 +549,7 @@ function requestPermit(t, o) {
   return withLock_(function () {
     const item = itemsWithStatus_().filter(function (i) { return i.id === o.item; })[0];
     if (!item) throw new Error('رقم المفقود مش موجود.');
-    if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
+    if (['في المخزن'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
     const open = permitsWithStatus_().filter(function (p) { return p.item === o.item && (p.status === 'منتظر موافقة الإدارة' || p.status === 'ساري'); })[0];
     if (open) throw new Error('فيه إذن ' + open.status + ' للمفقود ده بالفعل: ' + open.id);
     const y = Utilities.formatDate(new Date(), TZ, 'yyyy');
@@ -573,7 +572,7 @@ function decidePermit(t, id, decision, hours, note) {
 function checkRelease_(itemId, permitId, purpose, role) {
   const item = itemsWithStatus_().filter(function (i) { return i.id === itemId; })[0];
   if (!item) throw new Error('رقم المفقود مش موجود.');
-  if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
+  if (['في المخزن'].indexOf(item.status) < 0) throw new Error('المفقود ده مش في المخزن (' + item.status + ').');
   if (!permitId && role === 'admin') return 'إذن مباشر من الإدارة';
   const p = permitsWithStatus_().filter(function (x) { return x.id === permitId; })[0];
   if (!p) throw new Error('لازم إذن خروج ساري قبل التسليم.');
@@ -649,7 +648,7 @@ function reportAction(t, id, action, value) {
   if (action === 'link') {
     const it = itemsWithStatus_().filter(function (i) { return i.id === String(value); })[0];
     if (!it) throw new Error('رقم المفقود مش موجود: ' + value);
-    if (['في المخزن', 'متأخر عن مدة الحفظ'].indexOf(it.status) < 0) throw new Error('المفقود ده مش في المخزن (' + it.status + ').');
+    if (['في المخزن'].indexOf(it.status) < 0) throw new Error('المفقود ده مش في المخزن (' + it.status + ').');
   }
   if (action === 'link') update_('reports', id, { 'رقم المفقود المطابق': value, 'حالة البلاغ': 'اتطابق' });
   else if (action === 'unlink') update_('reports', id, { 'رقم المفقود المطابق': '', 'حالة البلاغ': 'مفتوح' });
@@ -724,7 +723,7 @@ function importOld() {
   const VALUABLE = ['موبايل', 'محفظة', 'ساعة', 'مجوهرات', 'لابتوب', 'تابلت', 'كاميرا', 'كارنيهات / بطاقات', 'كروت بنك', 'فلوس'];
   const cats = {}; list_('cats', 'النوع').forEach(function (c) { cats[c] = 1; });
   const locs = {}; list_('locs', 'المكان').forEach(function (c) { locs[c] = 1; });
-  const addCat = function (c) { if (!c || cats[c]) return; const v = VALUABLE.indexOf(c) >= 0; sheet_('cats').appendRow([c, v ? 90 : 30, v ? 'نعم' : 'لا']); cats[c] = 1; out.cats++; };
+  const addCat = function (c) { if (!c || cats[c]) return; const v = VALUABLE.indexOf(c) >= 0; append_('cats', { 'النوع': c, 'ثمين': v ? 'نعم' : 'لا' }); cats[c] = 1; out.cats++; };
   const addLoc = function (c) { if (!c || locs[c]) return; sheet_('locs').appendRow([c]); locs[c] = 1; out.locs++; };
 
   // 1) القوائم
@@ -816,7 +815,7 @@ function importLegacy(t, rows) {
       const code = String(x.code || '').trim();
       if (!code || have[code]) { out.skipped++; return; }
       const cat = x.cat || 'أخرى', loc = x.loc || '';
-      if (!cats[cat]) { sheet_('cats').appendRow([cat, 30, 'لا']); cats[cat] = 1; out.cats++; }
+      if (!cats[cat]) { append_('cats', { 'النوع': cat, 'ثمين': 'لا' }); cats[cat] = 1; out.cats++; }
       if (loc && !locs[loc]) { sheet_('locs').appendRow([loc]); locs[loc] = 1; out.locs++; }
       const notes = ['منقول من شيت الإكسيل', x.qty ? 'العدد: ' + x.qty : '', x.photoPath ? 'الصورة على جهاز المكتب: ' + x.photoPath : '',
         x.note || ''].filter(String).join(' · ');
