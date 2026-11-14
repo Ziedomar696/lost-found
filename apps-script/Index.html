@@ -48,7 +48,7 @@ function fd(s){if(!s)return "—";var p=String(s).split("T"),d=p[0].split("-");r
 function toast(t){var e=$("#toast");e.textContent=t;e.style.display="block";clearTimeout(toast.t);toast.t=setTimeout(function(){e.style.display="none"},3000)}
 var TOKEN="";try{TOKEN=localStorage.getItem("mf_token")||""}catch(e){}
 function setToken(t){TOKEN=t||"";try{t?localStorage.setItem("mf_token",t):localStorage.removeItem("mf_token")}catch(e){}}
-function raw(fn,args,ok,btn){if(btn)btn.disabled=true;var r=google.script.run.withSuccessHandler(function(x){if(btn)btn.disabled=false;ok&&ok(x)}).withFailureHandler(function(e){if(btn)btn.disabled=false;var m=e.message||String(e);if(m.indexOf("AUTH:")>=0){setToken("");D=null;closeM();toast(m.replace(/^.*AUTH:\s*/,""));showLogin();return}toast(m)});r[fn].apply(r,args||[])}
+function raw(fn,args,ok,btn){if(btn)btn.disabled=true;var r=google.script.run.withSuccessHandler(function(x){if(btn)btn.disabled=false;ok&&ok(x)}).withFailureHandler(function(e){if(btn)btn.disabled=false;var m=e.message||String(e);if(m.indexOf("AUTH:")>=0){setToken("");D=null;closeM();toast(m.replace(/^.*AUTH:\s*/,""));showLogin();return}toast(m)});try{r[fn].apply(r,args||[])}catch(e){if(btn)btn.disabled=false;toast("خطأ: "+(e.message||e))}}
 function call(fn,args,ok,btn){raw(fn,[TOKEN].concat(args||[]),ok,btn)}
 function reload(cb){if(!TOKEN)return start();call("boot",[],function(x){D=x;render();cb&&cb()})}
 function opts(arr,sel,ph){return (ph?'<option value="">'+ph+'</option>':"")+arr.map(function(v){return '<option'+(v===sel?" selected":"")+'>'+esc(v)+'</option>'}).join("")}
@@ -412,7 +412,7 @@ function parseLegacy(A){var hi=-1,H=null;
     var photo=sv(g(r,"photo")),rb=sv(g(r,"rb")),st=sv(g(r,"st")).toLowerCase(),parts=rb.split(/\s+-\s+/);
     var short=photo.replace(/^.*?[\\\/](photo[\\\/])/i,"$1");
     var dd=g(r,"dd");
-    return {code:sv(g(r,"code")).replace(/\.0$/,""),by:sv(g(r,"by")),found:legacyDate(g(r,"date"),photo),rawDate:g(r,"date"),cat:sv(g(r,"cat")),desc:sv(g(r,"desc")),loc:sv(g(r,"loc")),
+    return {code:sv(g(r,"code")).replace(/\.0$/,""),by:sv(g(r,"by")),found:legacyDate(g(r,"date"),photo),cat:sv(g(r,"cat")),desc:sv(g(r,"desc")),loc:sv(g(r,"loc")),
       qty:sv(g(r,"qty")),photoPath:short,delivered:st==="delivered"||!!rb,delivDate:dd==null||dd===""?"":legacyDate(dd,""),recRaw:rb,recUnit:parts.length>1?parts[0]:"",recName:parts.length>1?parts.slice(1).join(" - "):rb}})}
 function impPreview(rows){IMP=rows;var o=$("#imp_o");
   if(!rows.length){o.innerHTML='<div class="note e">مش لاقي صف عناوين فيه «Auto Code» في الملف.</div>';return}
